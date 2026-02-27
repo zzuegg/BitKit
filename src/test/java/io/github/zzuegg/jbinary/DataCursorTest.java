@@ -1,6 +1,7 @@
 package io.github.zzuegg.jbinary;
 
 import io.github.zzuegg.jbinary.annotation.*;
+import io.github.zzuegg.jbinary.octree.CollapsingFunction;
 import io.github.zzuegg.jbinary.octree.FastOctreeDataStore;
 import io.github.zzuegg.jbinary.octree.OctreeDataStore;
 import org.junit.jupiter.api.Test;
@@ -336,5 +337,382 @@ class DataCursorTest {
             public int x;
         }
         assertThrows(IllegalArgumentException.class, () -> DataCursor.of(store, BadCursor.class));
+    }
+
+    // ------------------------------------------------------------------ tests: OctreeDataStore
+
+    @Test
+    void octreeMultiComponentCursorLoadFlush() {
+        OctreeDataStore store = OctreeDataStore.builder(4)
+                .component(Terrain.class, CollapsingFunction.never())
+                .component(Water.class, CollapsingFunction.never())
+                .build();
+        DataCursor<MultiCursor> cursor = DataCursor.of(store, MultiCursor.class);
+
+        int row = store.row(5, 3, 7);
+        cursor.get().terrainHeight = 180;
+        cursor.get().waterSalinity = 0.035;
+        cursor.get().waterFrozen   = true;
+        cursor.flush(store, row);
+
+        cursor.load(store, row);
+        assertEquals(180,   cursor.get().terrainHeight);
+        assertEquals(0.035, cursor.get().waterSalinity, 0.0001);
+        assertTrue(cursor.get().waterFrozen);
+    }
+
+    @Test
+    void octreePartialCursorDoesNotOverwriteOmittedField() {
+        OctreeDataStore store = OctreeDataStore.builder(4)
+                .component(Terrain.class, CollapsingFunction.never())
+                .build();
+        DataCursor<PartialCursor> cursor = DataCursor.of(store, PartialCursor.class);
+
+        // Pre-set temperature via a separate accessor
+        Accessors.doubleFieldInStore(store, Terrain.class, "temperature").set(store, store.row(1, 1, 1), 30.0);
+
+        cursor.get().height = 99;
+        cursor.get().active = true;
+        cursor.flush(store, store.row(1, 1, 1));
+
+        // temperature must still be 30.0 (not touched by partial cursor)
+        assertEquals(30.0, Accessors.doubleFieldInStore(store, Terrain.class, "temperature")
+                .get(store, store.row(1, 1, 1)), 0.01);
+        assertEquals(99, Accessors.intFieldInStore(store, Terrain.class, "height")
+                .get(store, store.row(1, 1, 1)));
+    }
+
+    @Test
+    void octreeEnumCursorRoundTrip() {
+        OctreeDataStore store = OctreeDataStore.builder(4)
+                .component(BiomeData.class, CollapsingFunction.never())
+                .build();
+        DataCursor<EnumCursor> cursor = DataCursor.of(store, EnumCursor.class);
+
+        int row = store.row(2, 3, 4);
+        cursor.get().biome     = Biome.DESERT;
+        cursor.get().fertility = 60;
+        cursor.flush(store, row);
+
+        cursor.load(store, row);
+        assertEquals(Biome.DESERT, cursor.get().biome);
+        assertEquals(60,           cursor.get().fertility);
+    }
+
+    @Test
+    void octreeUpdateReturnsPopulatedInstance() {
+        OctreeDataStore store = OctreeDataStore.builder(4)
+                .component(Terrain.class, CollapsingFunction.never())
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        int row = store.row(0, 0, 1);
+        Accessors.intFieldInStore(store, Terrain.class, "height").set(store, row, 77);
+
+        TerrainCursor result = cursor.update(store, row);
+        assertSame(result, cursor.get());
+        assertEquals(77, result.height);
+    }
+
+    @Test
+    void octreeCursorInstanceReusedAcrossDifferentRows() {
+        OctreeDataStore store = OctreeDataStore.builder(4)
+                .component(Terrain.class, CollapsingFunction.never())
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        Accessors.intFieldInStore(store, Terrain.class, "height").set(store, store.row(0, 0, 0), 10);
+        Accessors.intFieldInStore(store, Terrain.class, "height").set(store, store.row(1, 0, 0), 20);
+
+        cursor.load(store, store.row(0, 0, 0));
+        TerrainCursor ref = cursor.get();
+        assertEquals(10, ref.height);
+
+        cursor.load(store, store.row(1, 0, 0));
+        assertSame(ref, cursor.get());
+        assertEquals(20, ref.height);
+    }
+
+    @Test
+    void octreeCursorRowIsolation() {
+        OctreeDataStore store = OctreeDataStore.builder(4)
+                .component(Terrain.class, CollapsingFunction.never())
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        cursor.get().height = 100;
+        cursor.flush(store, store.row(3, 3, 3));
+
+        cursor.load(store, store.row(4, 4, 4));  // different voxel, never written
+        assertEquals(0, cursor.get().height);    // should be 0 (unwritten)
+    }
+
+    @Test
+    void octreeCursorFlushAllSameValueTriggerCollapse() {
+        OctreeDataStore store = OctreeDataStore.builder(1)  // 2×2×2 space
+                .component(Terrain.class)
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        // Write same height to all 8 voxels via cursor → should collapse
+        for (int x = 0; x < 2; x++)
+            for (int y = 0; y < 2; y++)
+                for (int z = 0; z < 2; z++) {
+                    cursor.get().height      = 42;
+                    cursor.get().temperature = 10.0;
+                    cursor.get().active      = false;
+                    cursor.flush(store, store.row(x, y, z));
+                }
+
+        assertEquals(1, store.nodeCount());
+
+        // Values still readable via cursor
+        cursor.load(store, store.row(1, 1, 1));
+        assertEquals(42, cursor.get().height);
+    }
+
+    @Test
+    void octreeCursorLoadFromCollapsedRegion() {
+        OctreeDataStore store = OctreeDataStore.builder(2)  // 4×4×4 space
+                .component(Terrain.class)
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        // Collapse entire space to a single node with height=99
+        for (int x = 0; x < 4; x++)
+            for (int y = 0; y < 4; y++)
+                for (int z = 0; z < 4; z++) {
+                    cursor.get().height      = 99;
+                    cursor.get().temperature = 0.0;
+                    cursor.get().active      = false;
+                    cursor.flush(store, store.row(x, y, z));
+                }
+        assertEquals(1, store.nodeCount());
+
+        // Cursor load from any voxel should still return 99
+        cursor.load(store, store.row(2, 2, 2));
+        assertEquals(99, cursor.get().height);
+        cursor.load(store, store.row(0, 3, 1));
+        assertEquals(99, cursor.get().height);
+    }
+
+    @Test
+    void octreeCursorWithBatchMode() {
+        OctreeDataStore store = OctreeDataStore.builder(1)
+                .component(Terrain.class)
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        store.beginBatch();
+        for (int x = 0; x < 2; x++)
+            for (int y = 0; y < 2; y++)
+                for (int z = 0; z < 2; z++) {
+                    cursor.get().height = 55;
+                    cursor.flush(store, store.row(x, y, z));
+                }
+        // Not yet collapsed during batch
+        assertTrue(store.nodeCount() > 1);
+        store.endBatch();
+        // Collapsed after endBatch
+        assertEquals(1, store.nodeCount());
+
+        cursor.load(store, store.row(0, 0, 0));
+        assertEquals(55, cursor.get().height);
+    }
+
+    @Test
+    void octreeDefaultValuesReadByUnwrittenCursorFields() {
+        OctreeDataStore store = OctreeDataStore.builder(4)
+                .component(Terrain.class)
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        cursor.load(store, store.row(5, 5, 5));
+        assertEquals(0,     cursor.get().height);
+        assertEquals(-50.0, cursor.get().temperature, 0.01);
+        assertFalse(cursor.get().active);
+    }
+
+    // ------------------------------------------------------------------ tests: FastOctreeDataStore
+
+    @Test
+    void fastOctreeMultiComponentCursorLoadFlush() {
+        FastOctreeDataStore store = FastOctreeDataStore.builder(4)
+                .component(Terrain.class, CollapsingFunction.never())
+                .component(Water.class, CollapsingFunction.never())
+                .build();
+        DataCursor<MultiCursor> cursor = DataCursor.of(store, MultiCursor.class);
+
+        int row = store.row(7, 2, 5);
+        cursor.get().terrainHeight = 200;
+        cursor.get().waterSalinity = 0.9;
+        cursor.get().waterFrozen   = false;
+        cursor.flush(store, row);
+
+        cursor.load(store, row);
+        assertEquals(200, cursor.get().terrainHeight);
+        assertEquals(0.9, cursor.get().waterSalinity, 0.0001);
+        assertFalse(cursor.get().waterFrozen);
+    }
+
+    @Test
+    void fastOctreePartialCursorDoesNotOverwriteOmittedField() {
+        FastOctreeDataStore store = FastOctreeDataStore.builder(4)
+                .component(Terrain.class, CollapsingFunction.never())
+                .build();
+        DataCursor<PartialCursor> cursor = DataCursor.of(store, PartialCursor.class);
+
+        Accessors.doubleFieldInStore(store, Terrain.class, "temperature").set(store, store.row(2, 2, 2), -10.0);
+
+        cursor.get().height = 50;
+        cursor.get().active = true;
+        cursor.flush(store, store.row(2, 2, 2));
+
+        assertEquals(-10.0, Accessors.doubleFieldInStore(store, Terrain.class, "temperature")
+                .get(store, store.row(2, 2, 2)), 0.01);
+        assertEquals(50, Accessors.intFieldInStore(store, Terrain.class, "height")
+                .get(store, store.row(2, 2, 2)));
+    }
+
+    @Test
+    void fastOctreeEnumCursorRoundTrip() {
+        FastOctreeDataStore store = FastOctreeDataStore.builder(4)
+                .component(BiomeData.class, CollapsingFunction.never())
+                .build();
+        DataCursor<EnumCursor> cursor = DataCursor.of(store, EnumCursor.class);
+
+        int row = store.row(0, 1, 2);
+        cursor.get().biome     = Biome.OCEAN;
+        cursor.get().fertility = 80;
+        cursor.flush(store, row);
+
+        cursor.load(store, row);
+        assertEquals(Biome.OCEAN, cursor.get().biome);
+        assertEquals(80,          cursor.get().fertility);
+    }
+
+    @Test
+    void fastOctreeUpdateReturnsPopulatedInstance() {
+        FastOctreeDataStore store = FastOctreeDataStore.builder(4)
+                .component(Terrain.class, CollapsingFunction.never())
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        int row = store.row(3, 0, 2);
+        Accessors.intFieldInStore(store, Terrain.class, "height").set(store, row, 33);
+
+        TerrainCursor result = cursor.update(store, row);
+        assertSame(result, cursor.get());
+        assertEquals(33, result.height);
+    }
+
+    @Test
+    void fastOctreeCursorRowIsolation() {
+        FastOctreeDataStore store = FastOctreeDataStore.builder(4)
+                .component(Terrain.class, CollapsingFunction.never())
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        cursor.get().height = 111;
+        cursor.flush(store, store.row(1, 1, 1));
+
+        cursor.load(store, store.row(2, 2, 2));
+        assertEquals(0, cursor.get().height);
+    }
+
+    @Test
+    void fastOctreeCursorFlushAllSameValueTriggerCollapse() {
+        FastOctreeDataStore store = FastOctreeDataStore.builder(1)
+                .component(Terrain.class)
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        for (int x = 0; x < 2; x++)
+            for (int y = 0; y < 2; y++)
+                for (int z = 0; z < 2; z++) {
+                    cursor.get().height      = 7;
+                    cursor.get().temperature = 0.0;
+                    cursor.get().active      = false;
+                    cursor.flush(store, store.row(x, y, z));
+                }
+
+        assertEquals(1, store.nodeCount());
+        cursor.load(store, store.row(0, 0, 0));
+        assertEquals(7, cursor.get().height);
+    }
+
+    @Test
+    void fastOctreeCursorLoadFromCollapsedRegion() {
+        FastOctreeDataStore store = FastOctreeDataStore.builder(2)
+                .component(Terrain.class)
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        for (int x = 0; x < 4; x++)
+            for (int y = 0; y < 4; y++)
+                for (int z = 0; z < 4; z++) {
+                    cursor.get().height      = 15;
+                    cursor.get().temperature = 0.0;
+                    cursor.get().active      = false;
+                    cursor.flush(store, store.row(x, y, z));
+                }
+        assertEquals(1, store.nodeCount());
+
+        cursor.load(store, store.row(3, 2, 1));
+        assertEquals(15, cursor.get().height);
+    }
+
+    @Test
+    void fastOctreeCursorWithBatchMode() {
+        FastOctreeDataStore store = FastOctreeDataStore.builder(1)
+                .component(Terrain.class)
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        store.beginBatch();
+        for (int x = 0; x < 2; x++)
+            for (int y = 0; y < 2; y++)
+                for (int z = 0; z < 2; z++) {
+                    cursor.get().height = 88;
+                    cursor.flush(store, store.row(x, y, z));
+                }
+        assertTrue(store.nodeCount() > 1);
+        store.endBatch();
+        assertEquals(1, store.nodeCount());
+
+        cursor.load(store, store.row(1, 0, 1));
+        assertEquals(88, cursor.get().height);
+    }
+
+    @Test
+    void fastOctreeDefaultValuesReadByUnwrittenCursorFields() {
+        FastOctreeDataStore store = FastOctreeDataStore.builder(4)
+                .component(Terrain.class)
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        cursor.load(store, store.row(3, 2, 1));
+        assertEquals(0,     cursor.get().height);
+        assertEquals(-50.0, cursor.get().temperature, 0.01);
+        assertFalse(cursor.get().active);
+    }
+
+    @Test
+    void fastOctreeCursorInstanceReusedAcrossRows() {
+        FastOctreeDataStore store = FastOctreeDataStore.builder(4)
+                .component(Terrain.class, CollapsingFunction.never())
+                .build();
+        DataCursor<TerrainCursor> cursor = DataCursor.of(store, TerrainCursor.class);
+
+        Accessors.intFieldInStore(store, Terrain.class, "height").set(store, store.row(0, 0, 0), 5);
+        Accessors.intFieldInStore(store, Terrain.class, "height").set(store, store.row(1, 1, 1), 10);
+
+        cursor.load(store, store.row(0, 0, 0));
+        TerrainCursor ref = cursor.get();
+        assertEquals(5, ref.height);
+
+        cursor.load(store, store.row(1, 1, 1));
+        assertSame(ref, cursor.get());
+        assertEquals(10, ref.height);
     }
 }
