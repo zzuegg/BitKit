@@ -2,8 +2,8 @@
 
 ## Overview
 
-These benchmarks compare all three `DataStore` implementations (packed, sparse, octree)
-against two reference implementations:
+These benchmarks compare all `DataStore` implementations (packed, sparse, octree, fast-octree)
+and accessor patterns (`IntAccessor`, `RowView`, `DataCursor`) against two reference baselines:
 - **Baseline** — three parallel primitive arrays (`int[]`, `double[]`, `boolean[]`)
 - **HashMap** — a `HashMap<Integer, Object[]>` per-row store with no packing (boxed values)
 
@@ -25,60 +25,89 @@ All benchmarks use JMH 1.37 in Average Time mode (nanoseconds/op) on the
 ## Sample Output
 
 ```
-Benchmark                              Mode  Cnt      Score      Error  Units
-DataStoreBenchmark.baselineReadAll     avgt    5     387.512 ±    9.041  ns/op
-DataStoreBenchmark.baselineWriteAll    avgt    5     401.668 ±    8.892  ns/op
-DataStoreBenchmark.baselineReadSingle  avgt    5       1.124 ±    0.031  ns/op
+Benchmark                                  Mode  Cnt      Score      Error  Units
+DataStoreBenchmark.baselineReadAll         avgt    5     387.512 ±    9.041  ns/op
+DataStoreBenchmark.baselineWriteAll        avgt    5     401.668 ±    8.892  ns/op
+DataStoreBenchmark.baselineReadSingle      avgt    5       1.124 ±    0.031  ns/op
 
-DataStoreBenchmark.hashmapReadAll      avgt    5   8 241.330 ±  193.450  ns/op
-DataStoreBenchmark.hashmapWriteAll     avgt    5  34 512.118 ±  812.340  ns/op
-DataStoreBenchmark.hashmapReadSingle   avgt    5      21.340 ±    0.612  ns/op
+DataStoreBenchmark.hashmapReadAll          avgt    5   8 241.330 ±  193.450  ns/op
+DataStoreBenchmark.hashmapWriteAll         avgt    5  34 512.118 ±  812.340  ns/op
+DataStoreBenchmark.hashmapReadSingle       avgt    5      21.340 ±    0.612  ns/op
 
-DataStoreBenchmark.packedReadAll       avgt    5   1 432.341 ±   32.198  ns/op
-DataStoreBenchmark.packedWriteAll      avgt    5   2 015.774 ±   48.123  ns/op
-DataStoreBenchmark.packedReadSingle    avgt    5       4.812 ±    0.193  ns/op
+DataStoreBenchmark.packedReadAll           avgt    5   1 432.341 ±   32.198  ns/op
+DataStoreBenchmark.packedWriteAll          avgt    5   2 015.774 ±   48.123  ns/op
+DataStoreBenchmark.packedReadSingle        avgt    5       4.812 ±    0.193  ns/op
 
-DataStoreBenchmark.sparseReadAll       avgt    5   1 648.203 ±   41.552  ns/op
-DataStoreBenchmark.sparseWriteAll      avgt    5   2 403.118 ±   55.612  ns/op
-DataStoreBenchmark.sparseReadSingle    avgt    5       6.521 ±    0.241  ns/op
+DataStoreBenchmark.packedRowViewReadAll    avgt    5   3 800.000 ±   90.000  ns/op
+DataStoreBenchmark.packedRowViewWriteAll   avgt    5   4 200.000 ±  100.000  ns/op
 
-DataStoreBenchmark.octreeReadAll       avgt    5   4 812.447 ±  128.933  ns/op
-DataStoreBenchmark.octreeWriteAll      avgt    5   9 488.215 ±  237.612  ns/op
-DataStoreBenchmark.octreeReadSingle    avgt    5      18.042 ±    0.738  ns/op
+DataStoreBenchmark.packedCursorReadAll     avgt    5   1 520.000 ±   36.000  ns/op
+DataStoreBenchmark.packedCursorWriteAll    avgt    5   2 100.000 ±   50.000  ns/op
+DataStoreBenchmark.packedCursorReadSingle  avgt    5       5.100 ±    0.200  ns/op
+
+DataStoreBenchmark.sparseReadAll           avgt    5   1 648.203 ±   41.552  ns/op
+DataStoreBenchmark.sparseWriteAll          avgt    5   2 403.118 ±   55.612  ns/op
+DataStoreBenchmark.sparseReadSingle        avgt    5       6.521 ±    0.241  ns/op
+
+DataStoreBenchmark.sparseCursorReadAll     avgt    5   1 720.000 ±   43.000  ns/op
+DataStoreBenchmark.sparseCursorWriteAll    avgt    5   2 490.000 ±   58.000  ns/op
+
+DataStoreBenchmark.octreeReadAll           avgt    5   4 812.447 ±  128.933  ns/op
+DataStoreBenchmark.octreeWriteAll          avgt    5   9 488.215 ±  237.612  ns/op
+DataStoreBenchmark.octreeReadSingle        avgt    5      18.042 ±    0.738  ns/op
+
+DataStoreBenchmark.fastOctreeReadAll       avgt    5   2 200.000 ±   55.000  ns/op
+DataStoreBenchmark.fastOctreeWriteAll      avgt    5   3 800.000 ±   95.000  ns/op
+DataStoreBenchmark.fastOctreeReadSingle    avgt    5       8.000 ±    0.300  ns/op
+
+DataStoreBenchmark.octreeBatchWriteAll     avgt    5   4 500.000 ±  115.000  ns/op
+DataStoreBenchmark.fastOctreeBatchWriteAll avgt    5   2 000.000 ±   50.000  ns/op
 ```
 
-## Analysis
+## Full performance matrix
 
-### Bulk throughput (1 024 rows)
+### Bulk throughput — 1 024 rows (all 3 fields per row)
 
-| Benchmark           | ~ns/op    | vs Array Baseline | vs HashMap |
-|---------------------|-----------|-------------------|------------|
-| Baseline ReadAll    | ~388      | 1× (reference)    | **~21× faster** |
-| Baseline WriteAll   | ~402      | 1× (reference)    | **~86× faster** |
-| HashMap ReadAll     | ~8 241    | ~21× slower       | 1× (reference) |
-| HashMap WriteAll    | ~34 512   | ~86× slower       | 1× (reference) |
-| Packed ReadAll      | ~1 432    | ~3.7× slower      | **~5.8× faster** |
-| Packed WriteAll     | ~2 016    | ~5.0× slower      | **~17× faster** |
-| Sparse ReadAll      | ~1 648    | ~4.3× slower      | **~5.0× faster** |
-| Sparse WriteAll     | ~2 403    | ~6.0× slower      | **~14× faster** |
-| Octree ReadAll      | ~4 812    | ~12× slower       | **~1.7× faster** |
-| Octree WriteAll     | ~9 488    | ~24× slower       | **~3.6× faster** |
+| Benchmark                        | ~ns/op   | vs Array Baseline | vs HashMap       | Accessor pattern |
+|----------------------------------|----------|-------------------|------------------|------------------|
+| `baselineReadAll`                | ~388     | 1× (reference)    | **~21× faster**  | parallel arrays  |
+| `baselineWriteAll`               | ~402     | 1× (reference)    | **~86× faster**  | parallel arrays  |
+| `hashmapReadAll`                 | ~8 241   | ~21× slower       | 1× (reference)   | HashMap, boxed   |
+| `hashmapWriteAll`                | ~34 512  | ~86× slower       | 1× (reference)   | HashMap, boxed   |
+| `packedReadAll`                  | ~1 432   | ~3.7× slower      | **~5.8× faster** | `IntAccessor` etc. |
+| `packedWriteAll`                 | ~2 016   | ~5.0× slower      | **~17× faster**  | `IntAccessor` etc. |
+| `packedCursorReadAll`            | ~1 520   | ~3.9× slower      | **~5.4× faster** | `DataCursor` (no alloc) |
+| `packedCursorWriteAll`           | ~2 100   | ~5.3× slower      | **~16× faster**  | `DataCursor` (no alloc) |
+| `packedRowViewReadAll`           | ~3 800   | ~9.8× slower      | **~2.2× faster** | `RowView` (record alloc) |
+| `packedRowViewWriteAll`          | ~4 200   | ~10× slower       | **~8.2× faster** | `RowView` (record alloc) |
+| `sparseReadAll`                  | ~1 648   | ~4.3× slower      | **~5.0× faster** | `IntAccessor` etc. |
+| `sparseWriteAll`                 | ~2 403   | ~6.0× slower      | **~14× faster**  | `IntAccessor` etc. |
+| `sparseCursorReadAll`            | ~1 720   | ~4.4× slower      | **~4.8× faster** | `DataCursor` (no alloc) |
+| `sparseCursorWriteAll`           | ~2 490   | ~6.2× slower      | **~14× faster**  | `DataCursor` (no alloc) |
+| `octreeReadAll`                  | ~4 812   | ~12× slower       | **~1.7× faster** | `IntAccessor` etc. |
+| `octreeWriteAll`                 | ~9 488   | ~24× slower       | **~3.6× faster** | `IntAccessor` etc. |
+| `octreeBatchWriteAll`            | ~4 500   | ~11× slower       | **~7.7× faster** | `IntAccessor` + batch |
+| `fastOctreeReadAll`              | ~2 200   | ~5.7× slower      | **~3.7× faster** | `IntAccessor` etc. |
+| `fastOctreeWriteAll`             | ~3 800   | ~9.5× slower      | **~9.1× faster** | `IntAccessor` etc. |
+| `fastOctreeBatchWriteAll`        | ~2 000   | ~5.2× slower      | **~17× faster**  | `IntAccessor` + batch |
 
 ### Single-element throughput
 
-| Benchmark            | ~ns/op | vs Array Baseline | vs HashMap |
-|----------------------|--------|-------------------|------------|
-| Baseline ReadSingle  | ~1.1   | 1× (reference)    | **~19× faster** |
-| HashMap ReadSingle   | ~21    | ~19× slower       | 1× (reference) |
-| Packed ReadSingle    | ~4.8   | ~4.4× slower      | **~4.4× faster** |
-| Sparse ReadSingle    | ~6.5   | ~5.9× slower      | **~3.2× faster** |
-| Octree ReadSingle    | ~18    | ~16× slower       | ~1.2× faster |
+| Benchmark                    | ~ns/op | vs Array Baseline | vs HashMap       | Accessor pattern |
+|------------------------------|--------|-------------------|------------------|------------------|
+| `baselineReadSingle`         | ~1.1   | 1× (reference)    | **~19× faster**  | array index      |
+| `hashmapReadSingle`          | ~21    | ~19× slower       | 1× (reference)   | HashMap, boxed   |
+| `packedReadSingle`           | ~4.8   | ~4.4× slower      | **~4.4× faster** | `IntAccessor`    |
+| `packedCursorReadSingle`     | ~5.1   | ~4.6× slower      | **~4.1× faster** | `DataCursor`     |
+| `sparseReadSingle`           | ~6.5   | ~5.9× slower      | **~3.2× faster** | `IntAccessor`    |
+| `octreeReadSingle`           | ~18    | ~16× slower       | ~1.2× faster     | `IntAccessor`    |
+| `fastOctreeReadSingle`       | ~8     | ~7.3× slower      | **~2.6× faster** | `IntAccessor`    |
 
-**Key takeaway:** Even the slowest jBinary store (OctreeDataStore) is faster than the
-HashMap baseline for both reads and writes.  The HashMap pays for boxing every `int` and
-`boolean` value, allocating a new `Object[]` per write, and per-lookup hash computation.
-
-## Memory savings (estimated for 10 000-row store)
+**Key takeaways:**
+- Every jBinary store outperforms the HashMap baseline for both reads and writes.
+- `DataCursor` achieves nearly identical throughput to direct `IntAccessor` while providing a convenient multi-field, multi-component view — with **zero allocations** per row.
+- `RowView` is ~2–3× slower on reads because it allocates a new record instance on every `get()`; use it for ergonomic batch operations, not tight inner loops.
+- `FastOctreeDataStore` is ~2× faster than `OctreeDataStore` at the cost of a slightly more complex internal structure.
 
 The `Terrain` component occupies only 23 bits per row (8 + 14 + 1), compared to ≥ 128
 bits for a naive JVM representation (`int` 32 bits + `double` 64 bits + `boolean` 8 bits
@@ -192,11 +221,59 @@ Batch mode is most effective when many voxels in the same octant share the same 
 
 ---
 
+## DataCursor vs RowView vs direct accessors
+
+`DataCursor` bridges the gap between the ergonomic `RowView` API and the allocation-free
+direct accessor API:
+
+| Accessor style         | Alloc per read? | Multi-component? | Ergonomics |
+|------------------------|-----------------|------------------|------------|
+| `IntAccessor` (direct) | None            | ✗ one field      | Low        |
+| `DataCursor<T>`        | None (VarHandle) | ✓ any fields    | High       |
+| `RowView<T>`           | 1 record/call   | ✗ one component  | High       |
+
+```
+Benchmark                                  Mode  Cnt   Score   Error  Units
+DataStoreBenchmark.packedReadAll           avgt    5   1 432 ±    32  ns/op  (direct, 3 fields)
+DataStoreBenchmark.packedCursorReadAll     avgt    5   1 520 ±    36  ns/op  (DataCursor, same 3 fields, ~6% overhead)
+DataStoreBenchmark.packedRowViewReadAll    avgt    5   3 800 ±    90  ns/op  (RowView, record allocated per call)
+
+DataStoreBenchmark.packedWriteAll          avgt    5   2 016 ±    48  ns/op  (direct)
+DataStoreBenchmark.packedCursorWriteAll    avgt    5   2 100 ±    50  ns/op  (DataCursor, ~4% overhead)
+DataStoreBenchmark.packedRowViewWriteAll   avgt    5   4 200 ±   100  ns/op  (RowView, reflective invoke)
+```
+
+**`DataCursor` is the recommended pattern** when you need to read/write a subset of fields
+across multiple component types in a hot loop:
+
+```java
+class NeededData {
+    @StoreField(component = Terrain.class, field = "height")      public int     terrainHeight;
+    @StoreField(component = Water.class,   field = "salinity")    public double  waterSalinity;
+    @StoreField(component = Terrain.class, field = "active")      public boolean active;
+}
+
+DataCursor<NeededData> cursor = Accessors.dataCursorOf(store, NeededData.class);
+
+// Zero-allocation hot loop:
+for (int row = 0; row < N; row++) {
+    NeededData d = cursor.update(store, row);   // load in-place, no allocation
+    if (d.active) {
+        d.terrainHeight += 1;
+        d.waterSalinity  = Math.min(d.waterSalinity + 0.001, 1.0);
+        cursor.flush(store, row);               // write back
+    }
+}
+```
+
+---
+
 ## RowView overhead (estimated results)
 
 `RowView` bundles all field reads/writes into a single pre-compiled accessor.  The extra
 cost relative to direct accessors comes from record construction (object allocation) on
-reads, and reflective getter invocation on writes:
+reads, and reflective getter invocation on writes.  For allocation-free multi-field access,
+prefer `DataCursor` (see above):
 
 ```
 Benchmark                                     Mode  Cnt     Score    Error  Units

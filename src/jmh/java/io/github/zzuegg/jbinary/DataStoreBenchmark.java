@@ -6,6 +6,7 @@ import io.github.zzuegg.jbinary.accessor.IntAccessor;
 import io.github.zzuegg.jbinary.annotation.BitField;
 import io.github.zzuegg.jbinary.annotation.BoolField;
 import io.github.zzuegg.jbinary.annotation.DecimalField;
+import io.github.zzuegg.jbinary.annotation.StoreField;
 import io.github.zzuegg.jbinary.octree.FastOctreeDataStore;
 import io.github.zzuegg.jbinary.octree.OctreeDataStore;
 import org.openjdk.jmh.annotations.*;
@@ -30,18 +31,27 @@ public class DataStoreBenchmark {
             @BoolField boolean active
     ) {}
 
+    // ------------------------------------------------------------------ DataCursor projection class
+    public static class TerrainCursor {
+        @StoreField(component = Terrain.class, field = "height")      public int     height;
+        @StoreField(component = Terrain.class, field = "temperature") public double  temperature;
+        @StoreField(component = Terrain.class, field = "active")      public boolean active;
+    }
+
     // ------------------------------------------------------------------ packed store
     DataStore packedStore;
     IntAccessor    packedHeightAcc;
     DoubleAccessor packedTempAcc;
     BoolAccessor   packedActiveAcc;
     RowView<Terrain> packedRowView;
+    DataCursor<TerrainCursor> packedCursor;
 
     // ------------------------------------------------------------------ sparse store
     DataStore sparseStore;
     IntAccessor    sparseHeightAcc;
     DoubleAccessor sparseTempAcc;
     BoolAccessor   sparseActiveAcc;
+    DataCursor<TerrainCursor> sparseCursor;
 
     // ------------------------------------------------------------------ octree store
     // maxDepth=4 → 16×16×16 = 4 096 voxels; we use N=1024 of them
@@ -76,12 +86,14 @@ public class DataStoreBenchmark {
         packedTempAcc   = Accessors.doubleFieldInStore(packedStore, Terrain.class, "temperature");
         packedActiveAcc = Accessors.boolFieldInStore(packedStore, Terrain.class, "active");
         packedRowView   = RowView.of(packedStore, Terrain.class);
+        packedCursor    = DataCursor.of(packedStore, TerrainCursor.class);
 
         // sparse store
         sparseStore = DataStore.sparse(N, Terrain.class);
         sparseHeightAcc = Accessors.intFieldInStore(sparseStore, Terrain.class, "height");
         sparseTempAcc   = Accessors.doubleFieldInStore(sparseStore, Terrain.class, "temperature");
         sparseActiveAcc = Accessors.boolFieldInStore(sparseStore, Terrain.class, "active");
+        sparseCursor    = DataCursor.of(sparseStore, TerrainCursor.class);
 
         // octree store (maxDepth=4 → 16×16×16 space; first N Morton-coded rows)
         octreeStore = OctreeDataStore.builder(4)
@@ -195,6 +207,34 @@ public class DataStoreBenchmark {
         }
     }
 
+    // ------------------------------------------------------------------ packed DataCursor benchmarks
+
+    @Benchmark
+    public void packedCursorReadAll(Blackhole bh) {
+        for (int i = 0; i < N; i++) {
+            TerrainCursor d = packedCursor.update(packedStore, i);
+            bh.consume(d.height);
+            bh.consume(d.temperature);
+            bh.consume(d.active);
+        }
+    }
+
+    @Benchmark
+    public void packedCursorWriteAll() {
+        TerrainCursor d = packedCursor.get();
+        for (int i = 0; i < N; i++) {
+            d.height      = i % 256;
+            d.temperature = (i % 100) - 50.0;
+            d.active      = (i & 1) == 0;
+            packedCursor.flush(packedStore, i);
+        }
+    }
+
+    @Benchmark
+    public int packedCursorReadSingle() {
+        return packedCursor.update(packedStore, N / 2).height;
+    }
+
     // ------------------------------------------------------------------ sparse benchmarks
 
     @Benchmark
@@ -220,7 +260,28 @@ public class DataStoreBenchmark {
         return sparseHeightAcc.get(sparseStore, N / 2);
     }
 
-    // ------------------------------------------------------------------ octree benchmarks
+    // ------------------------------------------------------------------ sparse DataCursor benchmarks
+
+    @Benchmark
+    public void sparseCursorReadAll(Blackhole bh) {
+        for (int i = 0; i < N; i++) {
+            TerrainCursor d = sparseCursor.update(sparseStore, i);
+            bh.consume(d.height);
+            bh.consume(d.temperature);
+            bh.consume(d.active);
+        }
+    }
+
+    @Benchmark
+    public void sparseCursorWriteAll() {
+        TerrainCursor d = sparseCursor.get();
+        for (int i = 0; i < N; i++) {
+            d.height      = i % 256;
+            d.temperature = (i % 100) - 50.0;
+            d.active      = (i & 1) == 0;
+            sparseCursor.flush(sparseStore, i);
+        }
+    }
 
     @Benchmark
     public void octreeReadAll(Blackhole bh) {

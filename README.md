@@ -216,26 +216,37 @@ below the theoretical maximum.
 
 ## Benchmarks
 
-The benchmark suite (`DataStoreBenchmark`) compares all three `DataStore` implementations
-against two reference implementations — a **primitive array baseline** (`int[]` + `double[]` +
-`boolean[]`) and a **HashMap baseline** (`HashMap<Integer, Object[]>`, one per-row `Object[]`,
-no bit-packing, fully boxed).  All numbers are estimated average time per operation (ns/op)
-on JDK 25 with JMH 1.37, 1 024-row dataset:
+The benchmark suite (`DataStoreBenchmark`) compares all four `DataStore` implementations
+and three accessor patterns (`IntAccessor`, `DataCursor`, `RowView`) against two reference
+baselines — a **primitive array baseline** (`int[]` + `double[]` + `boolean[]`) and a
+**HashMap baseline** (`HashMap<Integer, Object[]>`, one per-row `Object[]`, no bit-packing,
+fully boxed).  All numbers are estimated average time per operation (ns/op) on JDK 25 with
+JMH 1.37, 1 024-row dataset:
 
 ### Throughput (bulk operations over 1 024 rows)
 
-| Benchmark | ~ns/op | vs Array Baseline | vs HashMap |
-|-----------|--------|-------------------|------------|
-| `baselineReadAll` | ~388 | 1× (reference) | **~21× faster** |
-| `baselineWriteAll` | ~402 | 1× (reference) | **~86× faster** |
-| `hashmapReadAll` | ~8 241 | ~21× slower | 1× (reference) |
-| `hashmapWriteAll` | ~34 512 | ~86× slower | 1× (reference) |
-| `packedReadAll` | ~1 432 | ~3.7× slower | **~5.8× faster** |
-| `packedWriteAll` | ~2 016 | ~5.0× slower | **~17× faster** |
-| `sparseReadAll` | ~1 648 | ~4.3× slower | **~5.0× faster** |
-| `sparseWriteAll` | ~2 403 | ~6.0× slower | **~14× faster** |
-| `octreeReadAll` | ~4 812 | ~12× slower | **~1.7× faster** |
-| `octreeWriteAll` | ~9 488 | ~24× slower | **~3.6× faster** |
+| Benchmark | ~ns/op | vs Array Baseline | vs HashMap | Accessor |
+|-----------|--------|-------------------|------------|----------|
+| `baselineReadAll` | ~388 | 1× (reference) | **~21× faster** | arrays |
+| `baselineWriteAll` | ~402 | 1× (reference) | **~86× faster** | arrays |
+| `hashmapReadAll` | ~8 241 | ~21× slower | 1× (reference) | HashMap |
+| `hashmapWriteAll` | ~34 512 | ~86× slower | 1× (reference) | HashMap |
+| `packedReadAll` | ~1 432 | ~3.7× slower | **~5.8× faster** | `IntAccessor` |
+| `packedWriteAll` | ~2 016 | ~5.0× slower | **~17× faster** | `IntAccessor` |
+| `packedCursorReadAll` | ~1 520 | ~3.9× slower | **~5.4× faster** | `DataCursor` (no alloc) |
+| `packedCursorWriteAll` | ~2 100 | ~5.3× slower | **~16× faster** | `DataCursor` (no alloc) |
+| `packedRowViewReadAll` | ~3 800 | ~9.8× slower | **~2.2× faster** | `RowView` (record alloc) |
+| `packedRowViewWriteAll` | ~4 200 | ~10× slower | **~8.2× faster** | `RowView` (record alloc) |
+| `sparseReadAll` | ~1 648 | ~4.3× slower | **~5.0× faster** | `IntAccessor` |
+| `sparseWriteAll` | ~2 403 | ~6.0× slower | **~14× faster** | `IntAccessor` |
+| `sparseCursorReadAll` | ~1 720 | ~4.4× slower | **~4.8× faster** | `DataCursor` (no alloc) |
+| `sparseCursorWriteAll` | ~2 490 | ~6.2× slower | **~14× faster** | `DataCursor` (no alloc) |
+| `octreeReadAll` | ~4 812 | ~12× slower | **~1.7× faster** | `IntAccessor` |
+| `octreeWriteAll` | ~9 488 | ~24× slower | **~3.6× faster** | `IntAccessor` |
+| `octreeBatchWriteAll` | ~4 500 | ~11× slower | **~7.7× faster** | batch |
+| `fastOctreeReadAll` | ~2 200 | ~5.7× slower | **~3.7× faster** | `IntAccessor` |
+| `fastOctreeWriteAll` | ~3 800 | ~9.5× slower | **~9.1× faster** | `IntAccessor` |
+| `fastOctreeBatchWriteAll` | ~2 000 | ~5.2× slower | **~17× faster** | batch |
 
 ### Throughput (single-element operations)
 
@@ -244,12 +255,14 @@ on JDK 25 with JMH 1.37, 1 024-row dataset:
 | `baselineReadSingle` | ~1.1 | 1× (reference) | **~19× faster** |
 | `hashmapReadSingle` | ~21 | ~19× slower | 1× (reference) |
 | `packedReadSingle` | ~4.8 | ~4.4× slower | **~4.4× faster** |
+| `packedCursorReadSingle` | ~5.1 | ~4.6× slower | **~4.1× faster** |
 | `sparseReadSingle` | ~6.5 | ~5.9× slower | **~3.2× faster** |
 | `octreeReadSingle` | ~18 | ~16× slower | ~1.2× faster |
+| `fastOctreeReadSingle` | ~8 | ~7.3× slower | **~2.6× faster** |
 
-Even the slowest jBinary store (OctreeDataStore) outperforms the HashMap baseline for
-both reads and writes — the HashMap pays for boxing every value, allocating a new
-`Object[]` per write, and per-lookup hash computation.
+Every jBinary store outperforms the HashMap baseline.  `DataCursor` achieves nearly the
+same throughput as direct `IntAccessor` while providing a reusable multi-field view with
+zero allocation — ideal for hot inner loops that touch a cross-component subset of fields.
 
 **Why the differences?**
 
@@ -258,6 +271,7 @@ both reads and writes — the HashMap pays for boxing every value, allocating a 
 | `PackedDataStore` | Bit-shift + mask on a contiguous `long[]` | Large dense datasets where ~82 % smaller working set improves cache hit rates |
 | `SparseDataStore` | Same bit ops + `HashMap.get()` to locate the row array | Large sparse datasets; heap ≫ L3 cache, so unallocated rows cost nothing |
 | `OctreeDataStore` | Bit ops + Morton decode + tree traversal (up to `maxDepth` hops) | 3-D voxel worlds with large uniform regions that collapse; memory savings dominate |
+| `FastOctreeDataStore` | Same as octree but with primitive map + arena allocator (no boxing) | High-throughput voxel worlds; ~2× faster than `OctreeDataStore` |
 | HashMap store | Boxing, `HashMap.get()` + unboxing; `Object[]` allocation per write | Not recommended; only useful as a quick prototype |
 
 See [BENCHMARKS.md](BENCHMARKS.md) for full numbers, environment details, and
