@@ -171,4 +171,24 @@ public final class Accessors {
     public static <T extends Record> RowView<T> rowViewInStore(DataStore store, Class<T> recordClass) {
         return RowView.of(store, recordClass);
     }
+
+    // ------------------------------------------------------------------
+    // DataCursor factory
+
+    /**
+     * Creates a pre-compiled {@link DataCursor} for the given class, bound to the given store.
+     *
+     * <p>The class must have a public no-arg constructor and at least one field annotated with
+     * {@link io.github.zzuegg.jbinary.annotation.StoreField}.  The cursor holds a single
+     * pre-allocated instance and updates it in-place on every {@link DataCursor#load} call,
+     * avoiding all per-row allocation.
+     *
+     * @param store the DataStore the cursor will be used with
+     * @param cls   the cursor class
+     * @param <T>   cursor type
+     * @return a pre-compiled {@link DataCursor}
+     */
+    public static <T> DataCursor<T> dataCursorOf(DataStore store, Class<T> cls) {
+        return DataCursor.of(store, cls);
+    }
 }
