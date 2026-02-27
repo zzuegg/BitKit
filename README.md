@@ -98,18 +98,142 @@ Biome b = biomeAcc.get(biomeStore, 0); // → FOREST
 | `@BoolField`        | `boolean`      | 1 bit                                            |
 | `@EnumField`        | any `enum`     | ⌈log₂(N)⌉ bits by ordinal (or explicit codes)   |
 
+## DataStore variants
+
+jBinary provides three `DataStore` implementations that all use the same bit-packing
+logic and work with the same accessor API.
+
+### `PackedDataStore` (default / dense)
+
+Pre-allocates a single contiguous `long[]` for all rows at construction time.
+Best when most rows will be written.
+
+```java
+DataStore store = DataStore.packed(10_000, Terrain.class, Water.class);
+// or equivalently:
+DataStore store = DataStore.of(10_000, Terrain.class, Water.class);
+```
+
+### `SparseDataStore` (lazy row allocation)
+
+Allocates each row's `long[]` on the first write; unwritten rows read back as
+all-zeros (field minimum for int/decimal, `false` for bool, ordinal-0 for enum).
+Best when only a fraction of rows will ever be populated.
+
+```java
+DataStore store = DataStore.sparse(10_000, Terrain.class, Water.class);
+int writtenRows = ((SparseDataStore) store).allocatedRowCount();
+```
+
+### `OctreeDataStore` (sparse 3-D with automatic collapsing)
+
+Organises a `sideLength × sideLength × sideLength` voxel space (sideLength = 2^maxDepth)
+as a sparse octree.  On each write, the store checks whether all 8 siblings satisfy every
+registered `CollapsingFunction`; if so, those 8 child nodes are merged into a single parent
+node.  Reading traverses from the finest level upward and returns the first matching node.
+
+```java
+import io.github.zzuegg.jbinary.octree.*;
+
+record Voxel(
+    @BitField(min = 0, max = 15)  int material,
+    @BitField(min = 0, max = 255) int density
+) {}
+
+// maxDepth=6 → 64 × 64 × 64 voxel space
+OctreeDataStore store = OctreeDataStore.builder(6)
+    .component(Voxel.class)                              // default: collapse on bit-equality
+    .component(Water.class, CollapsingFunction.never())  // custom per-component function
+    .build();
+
+IntAccessor material = Accessors.intFieldInStore(store, Voxel.class, "material");
+
+// Write using 3D coordinates → store.row(x, y, z) gives the Morton-code row index
+material.set(store, store.row(10, 5, 3), 7);
+int m = material.get(store, store.row(10, 5, 3));       // → 7
+
+// Uniform fill collapses automatically
+for (int x = 0; x < 64; x++)
+    for (int y = 0; y < 64; y++)
+        for (int z = 0; z < 64; z++)
+            material.set(store, store.row(x, y, z), 0); // all air
+
+store.nodeCount(); // → 1  (entire space merged into root)
+```
+
+**`CollapsingFunction` factories:**
+
+| Factory | Behaviour |
+|---------|-----------|
+| `CollapsingFunction.equalBits()` | Collapse when all 8 children are bit-identical (default) |
+| `CollapsingFunction.never()` | Never collapse |
+| `CollapsingFunction.always()` | Always collapse regardless of values |
+| Custom lambda | Full control via `canCollapse(offset, bits, stride, children[8])` |
+
 ## Memory savings
 
-For a `Terrain` row with 3 fields:
-- `@BitField(0, 255)` → 8 bits
-- `@DecimalField(-50, 50, 2)` → 14 bits (range 10 000, needs 14 bits)
-- `@BoolField` → 1 bit
+### Packed field encoding
 
-Total: **23 bits per row** vs. ≥ 128 bits for `int + double + boolean` (aligned JVM objects).
+jBinary stores each field in the minimum number of bits needed to represent its range,
+using a stride of ⌈totalBits/64⌉ `long` words per row.  For example:
+
+| Field                               | Java type | Naive JVM | jBinary storage |
+|-------------------------------------|-----------|-----------|-----------------|
+| `@BitField(min=0, max=255)`         | `int`     | 32 bits   | **8 bits**      |
+| `@DecimalField(min=-50, max=50, precision=2)` | `double` | 64 bits | **14 bits** (range 10 000 → 14 bits) |
+| `@BoolField`                        | `boolean` | 8–32 bits | **1 bit**       |
+| `@EnumField` (4-constant enum)      | `enum`    | 32 bits   | **2 bits**      |
+
+**`Terrain` example** (height + temperature + active):
+
+| Layout | Bits/row | 10 000-row memory |
+|--------|----------|-------------------|
+| Naive JVM (`int` + `double` + `boolean`) | ≥ 128 bits | ≥ 160 KB |
+| jBinary `PackedDataStore` | **23 bits** → 1 `long`/row | **80 KB** (~50% of naive) |
+
+That is a **2× reduction** before any sparsity optimisation.
+
+### Sparsity savings (`SparseDataStore`)
+
+`SparseDataStore` only allocates a row-array when the row is first written.  For a
+10 000-row store where only 10 % of rows are ever populated, heap usage drops to roughly
+10 % of the packed store (plus a small `HashMap` overhead per allocated row).
+
+### Octree savings (`OctreeDataStore`)
+
+`OctreeDataStore` stores a 3-D voxel space (side = 2^maxDepth).  Whenever all 8 children
+of an octree node are identical (or satisfy the registered `CollapsingFunction`), those
+8 nodes are replaced by 1.  In the best case (uniform space) the entire volume collapses
+to a single root node — **O(1) memory regardless of capacity**.  In typical voxel worlds
+with large homogeneous regions (air, stone, water), node counts stay orders of magnitude
+below the theoretical maximum.
+
+| Scenario | Nodes stored | Memory |
+|----------|-------------|--------|
+| Completely uniform (e.g. all-air) | 1 | 1 × `long[stride]` |
+| 50 % uniform surface world (depth 6, 64³) | hundreds | kB range |
+| Fully heterogeneous (worst case) | 2^(3×maxDepth) | same as `SparseDataStore` |
 
 ## Benchmarks
 
-See [BENCHMARKS.md](BENCHMARKS.md) for full results and reproduction instructions.
+The benchmark suite compares `PackedDataStore` against a **baseline** of plain parallel
+primitive arrays (`int[]` + `double[]` + `boolean[]`).  All numbers are average time per
+operation (ns/op) on JDK 25 with JMH 1.37.
+
+| Benchmark | Packed | Baseline | Ratio |
+|-----------|--------|----------|-------|
+| ReadAll (1 024 rows bulk) | ~1 432 ns | ~388 ns | ~3.7× slower |
+| WriteAll (1 024 rows bulk) | ~2 016 ns | ~402 ns | ~5.0× slower |
+| ReadSingle | ~4.8 ns | ~1.1 ns | ~4.4× slower |
+
+**Why is packed slower for raw throughput?**  Each get/set must bit-shift and mask the
+backing `long[]`, which is extra work compared to a direct array load.  The advantage
+shows up as soon as the dataset is large enough that **cache pressure** dominates: the
+packed store's working set is ~82 % smaller, so L2/L3 cache hit rates improve
+significantly for datasets in the tens of millions of rows.
+
+See [BENCHMARKS.md](BENCHMARKS.md) for full numbers, environment details, and
+reproduction instructions.
 
 ```bash
 ./gradlew jmhRun
