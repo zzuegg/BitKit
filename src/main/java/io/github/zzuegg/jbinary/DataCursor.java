@@ -10,6 +10,8 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A mutable, allocation-free cursor that holds primitive values from a subset of fields
@@ -17,9 +19,11 @@ import java.lang.reflect.Modifier;
  *
  * <p>Unlike {@link RowView} (which allocates a new record on every {@code get()}),
  * {@code DataCursor} keeps a single pre-allocated instance of {@code T} and updates its
- * fields in-place when {@link #load} is called.  All field reads/writes use {@link VarHandle}
- * so primitive values ({@code int}, {@code long}, {@code double}, {@code boolean}) are never
- * boxed.
+ * fields in-place when {@link #load} is called.  Field reads/writes are performed by a
+ * {@link CursorCodec}: when the cursor class is accessible, ByteBuddy generates a class
+ * that uses direct {@code PUTFIELD}/{@code GETFIELD} JVM instructions, eliminating
+ * {@link VarHandle} dispatch overhead.  If bytecode generation is unavailable, the
+ * implementation falls back to VarHandle-based access.
  *
  * <p>Typical pattern:
  * <pre>{@code
@@ -58,20 +62,12 @@ import java.lang.reflect.Modifier;
  */
 public final class DataCursor<T> {
 
-    /** Binds one cursor field to one DataStore bit-range via pre-computed accessors. */
-    private interface Binding {
-        /** Read from store → write into the cursor instance. */
-        void load(Object instance, DataStore<?> store, int row);
-        /** Read from cursor instance → write into store. */
-        void flush(Object instance, DataStore<?> store, int row);
-    }
+    private final T          instance;
+    private final CursorCodec codec;
 
-    private final T        instance;
-    private final Binding[] bindings;
-
-    private DataCursor(T instance, Binding[] bindings) {
+    private DataCursor(T instance, CursorCodec codec) {
         this.instance = instance;
-        this.bindings = bindings;
+        this.codec    = codec;
     }
 
     // -----------------------------------------------------------------------
@@ -85,7 +81,7 @@ public final class DataCursor<T> {
      * @param row   row index
      */
     public void load(DataStore<?> store, int row) {
-        for (Binding b : bindings) b.load(instance, store, row);
+        codec.load(instance, store, row);
     }
 
     /**
@@ -95,7 +91,7 @@ public final class DataCursor<T> {
      * @param row   row index
      */
     public void flush(DataStore<?> store, int row) {
-        for (Binding b : bindings) b.flush(instance, store, row);
+        codec.flush(instance, store, row);
     }
 
     /**
@@ -160,16 +156,14 @@ public final class DataCursor<T> {
                     "Cannot instantiate " + cls.getName() + " (needs a no-arg constructor)", e);
         }
 
-        @SuppressWarnings("unchecked")
-        Binding[] bindings = new Binding[count];
-        int idx = 0;
-
         MethodHandles.Lookup lookup;
         try {
             lookup = MethodHandles.privateLookupIn(cls, MethodHandles.lookup());
         } catch (IllegalAccessException e) {
             lookup = MethodHandles.lookup();
         }
+
+        List<CursorCodecGenerator.FieldSpec> specs = new ArrayList<>(count);
 
         for (Field f : fields) {
             StoreField ann = f.getAnnotation(StoreField.class);
@@ -192,51 +186,37 @@ public final class DataCursor<T> {
             Class<?> compClass = ann.component();
             String fieldName   = ann.field();
 
-            FieldLayout fl = LayoutBuilder.layout(compClass).field(fieldName);
-            int absOffset  = store.componentBitOffset(compClass) + fl.bitOffset();
-            Class<?> type  = f.getType();
+            FieldLayout fl    = LayoutBuilder.layout(compClass).field(fieldName);
+            int absOffset     = store.componentBitOffset(compClass) + fl.bitOffset();
+            Class<?> type     = f.getType();
 
-            bindings[idx++] = buildBinding(type, vh, fl, absOffset, f, compClass);
+            Object accessor = buildAccessor(type, fl, absOffset, f, compClass);
+            specs.add(new CursorCodecGenerator.FieldSpec(f, vh, accessor));
         }
 
-        return new DataCursor<>(instance, bindings);
+        CursorCodec codec = CursorCodecGenerator.build(cls, specs, lookup);
+        return new DataCursor<>(instance, codec);
     }
 
     // -----------------------------------------------------------------------
     // Internal
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static <T> Binding buildBinding(
-            Class<?> type, VarHandle vh, FieldLayout fl, int absOffset,
+    private static Object buildAccessor(
+            Class<?> type, FieldLayout fl, int absOffset,
             Field field, Class<?> compClass) {
 
         if (type == int.class) {
-            IntAccessor acc = new IntAccessor(absOffset, fl.bitWidth(), fl.minRaw());
-            return new Binding() {
-                public void load(Object inst, DataStore<?> s, int r)  { vh.set(inst, acc.get(s, r)); }
-                public void flush(Object inst, DataStore<?> s, int r) { acc.set(s, r, (int) vh.get(inst)); }
-            };
+            return new IntAccessor(absOffset, fl.bitWidth(), fl.minRaw());
         }
         if (type == long.class) {
-            LongAccessor acc = new LongAccessor(absOffset, fl.bitWidth(), fl.minRaw());
-            return new Binding() {
-                public void load(Object inst, DataStore<?> s, int r)  { vh.set(inst, acc.get(s, r)); }
-                public void flush(Object inst, DataStore<?> s, int r) { acc.set(s, r, (long) vh.get(inst)); }
-            };
+            return new LongAccessor(absOffset, fl.bitWidth(), fl.minRaw());
         }
         if (type == double.class) {
-            DoubleAccessor acc = new DoubleAccessor(absOffset, fl.bitWidth(), fl.minRaw(), fl.scale());
-            return new Binding() {
-                public void load(Object inst, DataStore<?> s, int r)  { vh.set(inst, acc.get(s, r)); }
-                public void flush(Object inst, DataStore<?> s, int r) { acc.set(s, r, (double) vh.get(inst)); }
-            };
+            return new DoubleAccessor(absOffset, fl.bitWidth(), fl.minRaw(), fl.scale());
         }
         if (type == boolean.class) {
-            BoolAccessor acc = new BoolAccessor(absOffset);
-            return new Binding() {
-                public void load(Object inst, DataStore<?> s, int r)  { vh.set(inst, acc.get(s, r)); }
-                public void flush(Object inst, DataStore<?> s, int r) { acc.set(s, r, (boolean) vh.get(inst)); }
-            };
+            return new BoolAccessor(absOffset);
         }
         if (type.isEnum()) {
             // Look up @EnumField on the component's field (not the cursor field)
@@ -258,15 +238,8 @@ public final class DataCursor<T> {
                     if (enumAnn != null) explicit = enumAnn.useExplicitCodes();
                 } catch (NoSuchFieldException ignored2) {}
             }
-            final boolean useExplicit = explicit;
-            EnumAccessor acc = EnumAccessor.forField(absOffset, fl.bitWidth(),
-                    (Class<? extends Enum>) type, useExplicit);
-            return new Binding() {
-                @SuppressWarnings("unchecked")
-                public void load(Object inst, DataStore<?> s, int r)  { vh.set(inst, acc.get(s, r)); }
-                @SuppressWarnings("unchecked")
-                public void flush(Object inst, DataStore<?> s, int r) { acc.set(s, r, (Enum) vh.get(inst)); }
-            };
+            return EnumAccessor.forField(absOffset, fl.bitWidth(),
+                    (Class<? extends Enum>) type, explicit);
         }
         throw new IllegalArgumentException(
                 "Unsupported @StoreField type: " + type + " on field " + field.getName()

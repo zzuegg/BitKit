@@ -84,7 +84,7 @@ Each `▓` ≈ 2 300 ns. Scale chosen so the most expensive read (octree 57 296 
 
 Baseline  (arrays)           ▏                            366
 Packed    (direct)          ▓▓▓▓▓▓▓▓▓▓▓▓▓               3,027
-Packed    (Cursor)          ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ *          32,657   *VarHandle overhead
+Packed    (Cursor)          ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ *          32,657   *ByteBuddy direct-field codec
 Packed    (RowView)         ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ **  126,705   **record alloc
 HashMap   (boxed)           ▓▓▓                          5,880
 Sparse    (direct)          ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓      17,897
@@ -137,9 +137,11 @@ Octree    (direct)           ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
 ### Reads
 - **Direct `IntAccessor` bulk read** on Packed is ~8× slower than a baseline array scan
   (bit-unpacking overhead) but ~2× faster than HashMap.
-- **`DataCursor` bulk read** adds ~10× VarHandle overhead over direct IntAccessor on Packed,
-  but provides allocation-free access to multiple fields across components — the right
-  tool for hot inner loops that read/write a cross-component projection.
+- **`DataCursor` bulk read** uses a ByteBuddy-generated class that accesses cursor fields
+  via direct `PUTFIELD`/`GETFIELD` JVM instructions, eliminating `VarHandle` dispatch
+  overhead.  The codec is compiled once per cursor class at construction time and reused
+  across all `load`/`flush` calls.  When bytecode generation is unavailable the
+  implementation transparently falls back to `VarHandle`-based access.
 - **`RowView` bulk read** is the most expensive for reads because it allocates a new record
   instance on every `get()` call.  Use it for ergonomic one-off record reads, not hot loops.
 - **Octree and FastOctree reads** involve Morton-code decoding and tree traversal, making
