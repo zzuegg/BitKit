@@ -1,1 +1,1 @@
-rootProject.name = "jbinary"
+rootProject.name = "bitkit"
