@@ -46,6 +46,7 @@ public final class PackedEntityData implements EntityData, EntityComponentListen
     private final EntityData parent;
     private final ObservableEntityData observable;
     private final int capacity;
+    private final boolean useRawStore;
 
     /** All active (not yet released) entity sets. */
     private final List<PackedEntitySet> entitySets = new CopyOnWriteArrayList<>();
@@ -77,14 +78,32 @@ public final class PackedEntityData implements EntityData, EntityComponentListen
      *                                  {@link ObservableEntityData}
      */
     public PackedEntityData(EntityData parent, int capacity) {
+        this(parent, capacity, false);
+    }
+
+    /**
+     * Creates a {@code PackedEntityData} wrapping {@code parent} with a custom
+     * capacity and store type.
+     *
+     * @param parent      the backing {@link EntityData}; must implement
+     *                    {@link ObservableEntityData}
+     * @param capacity    maximum number of entities per {@link PackedEntitySet}
+     * @param useRawStore if {@code true}, uses {@link io.github.zzuegg.jbinary.RawDataStore}
+     *                    (one long per field, no bit packing) instead of
+     *                    {@link io.github.zzuegg.jbinary.PackedDataStore}
+     * @throws IllegalArgumentException if {@code parent} does not implement
+     *                                  {@link ObservableEntityData}
+     */
+    public PackedEntityData(EntityData parent, int capacity, boolean useRawStore) {
         if (!(parent instanceof ObservableEntityData)) {
             throw new IllegalArgumentException(
                     "parent EntityData must implement ObservableEntityData to support " +
                     "change notifications; found: " + parent.getClass().getName());
         }
-        this.parent     = parent;
-        this.observable = (ObservableEntityData) parent;
-        this.capacity   = capacity;
+        this.parent      = parent;
+        this.observable  = (ObservableEntityData) parent;
+        this.capacity    = capacity;
+        this.useRawStore = useRawStore;
         this.observable.addEntityComponentListener(this);
     }
 
@@ -112,7 +131,7 @@ public final class PackedEntityData implements EntityData, EntityComponentListen
     @SuppressWarnings("rawtypes")
     public EntitySet getEntities(Class... types) {
         pruneReleasedSets();
-        PackedEntitySet set = new PackedEntitySet(parent, null, types, capacity);
+        PackedEntitySet set = new PackedEntitySet(parent, null, types, capacity, useRawStore);
         entitySets.add(set);
         return set;
     }
@@ -121,7 +140,7 @@ public final class PackedEntityData implements EntityData, EntityComponentListen
     @SuppressWarnings("rawtypes")
     public EntitySet getEntities(ComponentFilter filter, Class... types) {
         pruneReleasedSets();
-        PackedEntitySet set = new PackedEntitySet(parent, filter, types, capacity);
+        PackedEntitySet set = new PackedEntitySet(parent, filter, types, capacity, useRawStore);
         entitySets.add(set);
         return set;
     }

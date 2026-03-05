@@ -78,6 +78,20 @@ public class EntityDataBenchmark {
     private PackedEntitySet.PackedCursor<Orientation> oriCursor;
     private PackedEntitySet.PackedCursor<Speed>       spdCursor;
 
+    // -----------------------------------------------------------------------
+    // Raw store (no bit-packing) state — separate underlying EntityData instance
+
+    private DefaultEntityData  rawUnderlyingEd;
+    private PackedEntityData   rawEd;
+    private EntitySet          rawSet;
+
+    private PackedEntitySet.PackedCursor<Position>    rawPosCursor;
+    private PackedEntitySet.PackedCursor<Orientation> rawOriCursor;
+    private PackedEntitySet.PackedCursor<Speed>       rawSpdCursor;
+
+    private DataCursor<PhysicsProjection> rawMultiCursor;
+    private DataStore<?> rawStore;
+
     // Multi-component projection: all fields in one cursor, one load() per entity
     public static class PhysicsProjection {
         @StoreField(component = Position.class, field = "x")       public float posX;
@@ -142,14 +156,36 @@ public class EntityDataBenchmark {
         if (autoCursor != null) {
             autoCursorInstance = autoCursor.get();
         }
+
+        // --- Raw store (no bit-packing, one long per field) ---
+        rawUnderlyingEd = new DefaultEntityData();
+        for (int i = 0; i < entityCount; i++) {
+            EntityId eid = rawUnderlyingEd.createEntity();
+            rawUnderlyingEd.setComponents(eid,
+                    new Position(i, i * 0.5f, i * 0.25f),
+                    new Orientation(i * 0.1f, i * 0.2f, i * 0.3f),
+                    new Speed(1.0f + i * 0.001f));
+        }
+        rawEd  = new PackedEntityData(rawUnderlyingEd, entityCount + 1000, true);
+        rawSet = rawEd.getEntities(Position.class, Orientation.class, Speed.class);
+        rawSet.applyChanges();
+
+        PackedEntitySet rawPes = (PackedEntitySet) rawSet;
+        rawPosCursor = rawPes.createCursor(Position.class);
+        rawOriCursor = rawPes.createCursor(Orientation.class);
+        rawSpdCursor = rawPes.createCursor(Speed.class);
+        rawMultiCursor = rawPes.createDataCursor(PhysicsProjection.class);
+        rawStore = rawPes.store();
     }
 
     @TearDown(Level.Trial)
     public void tearDown() {
         defaultSet.release();
         packedSet.release();
+        rawSet.release();
         defaultEd.close();
         packedEd.close();
+        rawEd.close();
     }
 
     // -----------------------------------------------------------------------
@@ -239,6 +275,57 @@ public class EntityDataBenchmark {
         for (var entity : packedSet) {
             int idx = ((IndexedEntity) entity).getIndex();
             PhysicsProjection p = multiCursor.update(packedStore, idx);
+            Position newPos = new Position(
+                    p.posX + p.yaw   * p.speed,
+                    p.posY + p.pitch * p.speed,
+                    p.posZ + p.roll  * p.speed);
+            entity.set(newPos);
+            bh.consume(newPos);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Raw store benchmarks (no bit-packing — one long per field)
+
+    @Benchmark
+    public void rawStore_gameLoop(Blackhole bh) {
+        rawSet.applyChanges();
+        for (var entity : rawSet) {
+            Position    pos = entity.get(Position.class);
+            Orientation ori = entity.get(Orientation.class);
+            Speed       spd = entity.get(Speed.class);
+            Position newPos = new Position(
+                    pos.x() + ori.yaw()   * spd.value(),
+                    pos.y() + ori.pitch() * spd.value(),
+                    pos.z() + ori.roll()  * spd.value());
+            entity.set(newPos);
+            bh.consume(newPos);
+        }
+    }
+
+    @Benchmark
+    public void rawStore_gameLoop_cursor(Blackhole bh) {
+        rawSet.applyChanges();
+        for (var entity : rawSet) {
+            int idx = ((IndexedEntity) entity).getIndex();
+            Position    pos = rawPosCursor.read(idx);
+            Orientation ori = rawOriCursor.read(idx);
+            Speed       spd = rawSpdCursor.read(idx);
+            Position newPos = new Position(
+                    pos.x() + ori.yaw()   * spd.value(),
+                    pos.y() + ori.pitch() * spd.value(),
+                    pos.z() + ori.roll()  * spd.value());
+            entity.set(newPos);
+            bh.consume(newPos);
+        }
+    }
+
+    @Benchmark
+    public void rawStore_gameLoop_multiCursor(Blackhole bh) {
+        rawSet.applyChanges();
+        for (var entity : rawSet) {
+            int idx = ((IndexedEntity) entity).getIndex();
+            PhysicsProjection p = rawMultiCursor.update(rawStore, idx);
             Position newPos = new Position(
                     p.posX + p.yaw   * p.speed,
                     p.posY + p.pitch * p.speed,

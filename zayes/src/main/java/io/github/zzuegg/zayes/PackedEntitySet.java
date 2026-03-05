@@ -124,7 +124,7 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     PackedEntitySet(EntityData parent, ComponentFilter filter,
-                    Class<?>[] rawTypes, int capacity) {
+                    Class<?>[] rawTypes, int capacity, boolean useRawStore) {
         this.parent   = parent;
         this.filter   = filter;
         this.capacity = capacity;
@@ -152,7 +152,10 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
         }
 
         // ── Phase 2: build the single shared DataStore ──
-        this.store = DataStore.packed(capacity, storeClasses.toArray(new Class<?>[0]));
+        Class<?>[] storeClassArray = storeClasses.toArray(new Class<?>[0]);
+        this.store = useRawStore
+                ? DataStore.raw(capacity, storeClassArray)
+                : DataStore.packed(capacity, storeClassArray);
         this.presentAccessor = Accessors.boolFieldInStore(store, MembershipRecord.class, "present");
 
         // ── Phase 3: build ComponentCursorBridges for storable types; allocate heap arrays for others ──
