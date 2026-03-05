@@ -8,7 +8,9 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.*;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * A dense, fixed-capacity {@link DataStore} that packs multiple component types into a
@@ -25,8 +27,8 @@ public final class PackedDataStore<T> implements DataStore<T> {
     private final int capacity;
     private final int rowStrideLongs;   // number of longs per row
 
-    // per-component absolute bit offset within a row
-    private final Map<Class<?>, Integer> componentBitOffsets;
+    // per-component absolute bit offset within a row (identity-keyed for O(1) Class lookup)
+    private final IdentityHashMap<Class<?>, Integer> componentBitOffsets;
 
     // -----------------------------------------------------------------------
 
@@ -42,7 +44,7 @@ public final class PackedDataStore<T> implements DataStore<T> {
 
         // Assign bit offsets per component (packed sequentially)
         int bitCursor = 0;
-        Map<Class<?>, Integer> offsets = new LinkedHashMap<>();
+        IdentityHashMap<Class<?>, Integer> offsets = new IdentityHashMap<>(layouts.size() * 2);
         for (Map.Entry<Class<?>, ComponentLayout> e : layouts.entrySet()) {
             offsets.put(e.getKey(), bitCursor);
             bitCursor += e.getValue().totalBits();
@@ -51,12 +53,11 @@ public final class PackedDataStore<T> implements DataStore<T> {
         int rowStrideLongs = (rowBits + 63) / 64;
         if (rowStrideLongs == 0) rowStrideLongs = 1;
 
-        return new PackedDataStore<>(capacity, rowStrideLongs,
-                Collections.unmodifiableMap(offsets));
+        return new PackedDataStore<>(capacity, rowStrideLongs, offsets);
     }
 
     private PackedDataStore(int capacity, int rowStrideLongs,
-                            Map<Class<?>, Integer> componentBitOffsets) {
+                            IdentityHashMap<Class<?>, Integer> componentBitOffsets) {
         this.capacity = capacity;
         this.rowStrideLongs = rowStrideLongs;
         this.componentBitOffsets = componentBitOffsets;

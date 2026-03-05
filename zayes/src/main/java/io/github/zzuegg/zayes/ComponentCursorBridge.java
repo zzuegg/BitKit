@@ -99,6 +99,30 @@ final class ComponentCursorBridge<T> {
         void copyFromComponent(Object component, Object cursorInst);
     }
 
+    /**
+     * A FieldBridge backed by a single pre-composed MethodHandle:
+     * {@code (Object cursor, Object component) -> void}.
+     *
+     * <p>The handle chains the component field getter directly into the cursor
+     * VarHandle setter, so primitive values flow through the MethodHandle graph
+     * without boxing (unlike the previous {@code invoke()} + {@code VarHandle.set(Object)}
+     * approach which boxed every primitive return value).
+     */
+    private static final class ComposedFieldBridge implements FieldBridge {
+        private final MethodHandle copy;  // (Object cursorInst, Object component) -> void
+
+        ComposedFieldBridge(MethodHandle copy) { this.copy = copy; }
+
+        @Override
+        public void copyFromComponent(Object component, Object cursorInst) {
+            try {
+                copy.invokeExact(cursorInst, component);
+            } catch (Throwable e) {
+                throw new RuntimeException("Field copy failed", e);
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Factory
 
@@ -210,7 +234,10 @@ final class ComponentCursorBridge<T> {
         }
     }
 
-    /** Builds per-field bridges using pre-computed VarHandles and MethodHandles. */
+    /**
+     * Builds per-field bridges using pre-composed MethodHandles that chain the component
+     * field getter directly into the cursor VarHandle setter — no primitive boxing.
+     */
     private static FieldBridge[] buildBridges(Class<?> componentClass, Class<?> cursorClass,
                                                List<FieldLayout> fields,
                                                MethodHandles.Lookup cursorLookup,
@@ -220,11 +247,19 @@ final class ComponentCursorBridge<T> {
             String fieldName  = fields.get(i).name();
             Class<?> javaType = layoutFieldType(componentClass, fieldName);
 
-            VarHandle  cursorVh   = cursorLookup.findVarHandle(cursorClass, fieldName, javaType);
             MethodHandle compReader = findComponentReader(componentClass, fieldName, javaType, compLookup);
             if (compReader == null) return null;
 
-            bridges[i] = new VarHandleFieldBridge(cursorVh, compReader, javaType);
+            VarHandle cursorVh = cursorLookup.findVarHandle(cursorClass, fieldName, javaType);
+            // setter type: (CursorClass, fieldType) -> void
+            MethodHandle setter = cursorVh.toMethodHandle(VarHandle.AccessMode.SET);
+            // Chain: setter(cursor, getter(component)) — primitive flows directly, no boxing
+            MethodHandle combined = MethodHandles.filterArguments(setter, 1, compReader);
+            // Erase to (Object, Object) -> void for the uniform FieldBridge interface
+            MethodHandle erased = combined.asType(
+                    MethodType.methodType(void.class, Object.class, Object.class));
+
+            bridges[i] = new ComposedFieldBridge(erased);
         }
         return bridges;
     }
@@ -307,28 +342,4 @@ final class ComponentCursorBridge<T> {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // VarHandle-based FieldBridge (write path only)
-
-    private static final class VarHandleFieldBridge implements FieldBridge {
-        private final VarHandle    cursorVh;
-        private final MethodHandle compReader;
-        private final Class<?>     type;
-
-        VarHandleFieldBridge(VarHandle cursorVh, MethodHandle compReader, Class<?> type) {
-            this.cursorVh   = cursorVh;
-            this.compReader = compReader;
-            this.type       = type;
-        }
-
-        @Override
-        public void copyFromComponent(Object component, Object cursorInst) {
-            try {
-                Object val = compReader.invoke(component);
-                cursorVh.set(cursorInst, val);
-            } catch (Throwable e) {
-                throw new RuntimeException("Field copy failed", e);
-            }
-        }
-    }
 }
