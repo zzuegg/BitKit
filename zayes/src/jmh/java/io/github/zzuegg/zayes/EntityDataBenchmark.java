@@ -69,6 +69,11 @@ public class EntityDataBenchmark {
     private EntitySet          packedSet;
     private EntityId[]         packedIds;
 
+    // Pre-built direct-access cursors for the cursor benchmark
+    private PackedEntitySet.PackedCursor<Position>    posCursor;
+    private PackedEntitySet.PackedCursor<Orientation> oriCursor;
+    private PackedEntitySet.PackedCursor<Speed>       spdCursor;
+
     // -----------------------------------------------------------------------
     // Setup / teardown
 
@@ -100,6 +105,12 @@ public class EntityDataBenchmark {
         packedEd  = new PackedEntityData(packedUnderlyingEd);
         packedSet = packedEd.getEntities(Position.class, Orientation.class, Speed.class);
         packedSet.applyChanges();
+
+        // Build direct-access cursors for the cursor benchmark
+        PackedEntitySet pes = (PackedEntitySet) packedSet;
+        posCursor = pes.createCursor(Position.class);
+        oriCursor = pes.createCursor(Orientation.class);
+        spdCursor = pes.createCursor(Speed.class);
     }
 
     @TearDown(Level.Trial)
@@ -147,6 +158,29 @@ public class EntityDataBenchmark {
             Position    pos = entity.get(Position.class);
             Orientation ori = entity.get(Orientation.class);
             Speed       spd = entity.get(Speed.class);
+            Position newPos = new Position(
+                    pos.x() + ori.yaw()   * spd.value(),
+                    pos.y() + ori.pitch() * spd.value(),
+                    pos.z() + ori.roll()  * spd.value());
+            entity.set(newPos);
+            bh.consume(newPos);
+        }
+    }
+
+    /**
+     * Optimised variant: direct {@link PackedEntitySet.PackedCursor} reads bypass the
+     * {@link IndexedEntity#get} abstraction (no type-index lookup, no indirection
+     * through the entity wrapper).  Writes still use {@code entity.set()} to propagate
+     * changes through the normal zay-es pipeline.
+     */
+    @Benchmark
+    public void packedEntityData_gameLoop_cursor(Blackhole bh) {
+        packedSet.applyChanges();
+        for (var entity : packedSet) {
+            int idx = ((IndexedEntity) entity).getIndex();
+            Position    pos = posCursor.read(idx);
+            Orientation ori = oriCursor.read(idx);
+            Speed       spd = spdCursor.read(idx);
             Position newPos = new Position(
                     pos.x() + ori.yaw()   * spd.value(),
                     pos.y() + ori.pitch() * spd.value(),

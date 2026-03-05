@@ -571,6 +571,64 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
     }
 
     // -----------------------------------------------------------------------
+    // Cursor factory
+
+    /**
+     * Returns a {@link PackedCursor} that reads and writes components of type {@code T}
+     * directly from/to the packed store by dense row index, bypassing the
+     * {@link IndexedEntity#get}/{@link IndexedEntity#set} abstraction.
+     *
+     * <p>The cursor is created once and reused across many entities; it is not
+     * thread-safe.  Use {@link IndexedEntity#getIndex()} to obtain the row index.
+     *
+     * @param type the component class (must be one of the types registered with this set
+     *             <em>and</em> store-backed — i.e. {@link ComponentCursorBridge} was
+     *             successfully built for it)
+     * @return a typed cursor, or {@code null} if the type is not store-backed
+     */
+    @SuppressWarnings("unchecked")
+    public <T extends EntityComponent> PackedCursor<T> createCursor(Class<T> type) {
+        int ti = typeIndex(type);
+        if (ti < 0 || bridges[ti] == null) return null;
+        return new PackedCursor<>((ComponentCursorBridge<T>) bridges[ti], store);
+    }
+
+    /**
+     * A thin, reusable accessor that reads or writes one component type directly from/to
+     * the {@link PackedEntitySet}'s packed store by dense row index.
+     *
+     * <p>Obtain an instance via {@link PackedEntitySet#createCursor(Class)}; pass the
+     * entity's row index (from {@link IndexedEntity#getIndex()}) to {@link #read} or
+     * {@link #write}.
+     *
+     * @param <T> the component type
+     */
+    public static final class PackedCursor<T extends EntityComponent> {
+        private final ComponentCursorBridge<T> bridge;
+        private final DataStore<?>             store;
+
+        PackedCursor(ComponentCursorBridge<T> bridge, DataStore<?> store) {
+            this.bridge = bridge;
+            this.store  = store;
+        }
+
+        /**
+         * Reads the component at the given row index from the packed store and returns a
+         * new component instance.  Uses the unboxed {@link java.lang.invoke.MethodHandle}
+         * path — no {@code Object[]} allocation, no primitive boxing.
+         */
+        public T read(int index) { return bridge.read(store, index); }
+
+        /**
+         * Writes the component at the given row index to the packed store.
+         * <em>This does not propagate the change to the parent {@link com.simsilica.es.EntityData}</em>;
+         * call {@link IndexedEntity#set} if authoritative storage and change notification
+         * are required.
+         */
+        public void write(int index, T component) { bridge.write(store, index, component); }
+    }
+
+    // -----------------------------------------------------------------------
     // Helpers
 
     @SuppressWarnings("unchecked")
