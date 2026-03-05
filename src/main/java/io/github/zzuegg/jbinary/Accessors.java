@@ -123,6 +123,11 @@ public final class Accessors {
 
     @SuppressWarnings("unchecked")
     private static <E extends Enum<E>> Class<E> enumType(Class<?> component, String fieldName) {
+        int dot = fieldName.indexOf('.');
+        if (dot >= 0) {
+            Class<?> subType = resolveFieldType(component, fieldName.substring(0, dot));
+            return enumType(subType, fieldName.substring(dot + 1));
+        }
         if (component.isRecord()) {
             for (RecordComponent rc : component.getRecordComponents()) {
                 if (rc.getName().equals(fieldName)) return (Class<E>) rc.getType();
@@ -138,6 +143,11 @@ public final class Accessors {
     }
 
     private static RecordComponent recordComponent(Class<?> component, String fieldName) {
+        int dot = fieldName.indexOf('.');
+        if (dot >= 0) {
+            Class<?> subType = resolveFieldType(component, fieldName.substring(0, dot));
+            return recordComponent(subType, fieldName.substring(dot + 1));
+        }
         for (RecordComponent rc : component.getRecordComponents()) {
             if (rc.getName().equals(fieldName)) return rc;
         }
@@ -145,6 +155,11 @@ public final class Accessors {
     }
 
     private static EnumField enumFieldAnnotation(Class<?> component, String fieldName) {
+        int dot = fieldName.indexOf('.');
+        if (dot >= 0) {
+            Class<?> subType = resolveFieldType(component, fieldName.substring(0, dot));
+            return enumFieldAnnotation(subType, fieldName.substring(dot + 1));
+        }
         if (component.isRecord()) {
             return recordComponent(component, fieldName)
                     .getAnnotation(EnumField.class);
@@ -153,6 +168,26 @@ public final class Accessors {
             return component.getDeclaredField(fieldName).getAnnotation(EnumField.class);
         } catch (NoSuchFieldException e) {
             throw new IllegalArgumentException(e);
+        }
+    }
+
+    /**
+     * Returns the declared type of the field/record-component named {@code name} in {@code cls}.
+     */
+    private static Class<?> resolveFieldType(Class<?> cls, String name) {
+        if (cls.isRecord()) {
+            for (RecordComponent rc : cls.getRecordComponents()) {
+                if (rc.getName().equals(name)) return rc.getType();
+            }
+            throw new IllegalArgumentException(
+                    "Field '" + name + "' not found in record " + cls.getSimpleName());
+        } else {
+            try {
+                return cls.getDeclaredField(name).getType();
+            } catch (NoSuchFieldException e) {
+                throw new IllegalArgumentException(
+                        "Field '" + name + "' not found in " + cls.getSimpleName(), e);
+            }
         }
     }
 

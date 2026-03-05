@@ -46,24 +46,75 @@ public final class LayoutBuilder {
         List<FieldEntry> list = new ArrayList<>();
         if (cls.isRecord()) {
             for (RecordComponent rc : cls.getRecordComponents()) {
-                list.add(new FieldEntry(rc.getName(), rc.getType(),
+                collectEntryForField(list, rc.getName(), rc.getType(),
                         rc.getAnnotation(BitField.class),
                         rc.getAnnotation(DecimalField.class),
                         rc.getAnnotation(BoolField.class),
-                        rc.getAnnotation(EnumField.class)));
+                        rc.getAnnotation(EnumField.class));
             }
         } else {
             // Support plain classes / interfaces via declared fields
             for (Field f : cls.getDeclaredFields()) {
                 if (f.isSynthetic()) continue;
-                list.add(new FieldEntry(f.getName(), f.getType(),
+                collectEntryForField(list, f.getName(), f.getType(),
                         f.getAnnotation(BitField.class),
                         f.getAnnotation(DecimalField.class),
                         f.getAnnotation(BoolField.class),
-                        f.getAnnotation(EnumField.class)));
+                        f.getAnnotation(EnumField.class));
             }
         }
         return list;
+    }
+
+    /**
+     * Adds a field entry (or multiple flattened entries for composed records) to {@code list}.
+     *
+     * <p>If {@code type} is a record and has none of the primitive bit-packing annotations
+     * ({@link BitField}, {@link BoolField}, {@link EnumField}), it is treated as a
+     * <em>composed object</em> whose sub-fields are expanded in-place with dotted names
+     * (e.g., {@code "position.x"}).  An optional {@link DecimalField} on the composed field
+     * acts as a default for any sub-fields that do not carry their own annotation; sub-field
+     * annotations always take priority.
+     */
+    private static void collectEntryForField(List<FieldEntry> list,
+                                              String name, Class<?> type,
+                                              BitField bitField, DecimalField decimalField,
+                                              BoolField boolField, EnumField enumField) {
+        if (type.isRecord() && bitField == null && boolField == null && enumField == null) {
+            // Composed record — expand sub-fields recursively
+            expandComposedRecord(list, name, type, decimalField);
+        } else {
+            list.add(new FieldEntry(name, type, bitField, decimalField, boolField, enumField));
+        }
+    }
+
+    /**
+     * Recursively expands all components of a composed record type, prefixing each field
+     * name with {@code prefix + "."}.
+     *
+     * @param parentDecimalDefault  optional {@link DecimalField} from the parent field;
+     *                              used as a default for sub-fields that carry no annotation
+     *                              of their own
+     */
+    private static void expandComposedRecord(List<FieldEntry> list,
+                                              String prefix, Class<?> subRecordType,
+                                              DecimalField parentDecimalDefault) {
+        for (RecordComponent subRc : subRecordType.getRecordComponents()) {
+            String subName = prefix + "." + subRc.getName();
+            Class<?> subType = subRc.getType();
+
+            BitField   bitField      = subRc.getAnnotation(BitField.class);
+            DecimalField decimalField = subRc.getAnnotation(DecimalField.class);
+            BoolField  boolField     = subRc.getAnnotation(BoolField.class);
+            EnumField  enumField     = subRc.getAnnotation(EnumField.class);
+
+            // If the sub-field has no annotation of its own, inherit the parent default.
+            if (decimalField == null && bitField == null && boolField == null && enumField == null) {
+                decimalField = parentDecimalDefault;
+            }
+
+            collectEntryForField(list, subName, subType, bitField, decimalField, boolField, enumField);
+        }
     }
 
     private record FieldEntry(String name, Class<?> type,

@@ -96,47 +96,17 @@ final class RecordRowView<T extends Record> implements RowView<T> {
 
         for (int i = 0; i < n; i++) {
             RecordComponent rc = rcs[i];
-            FieldLayout fl = compLayout.field(rc.getName());
-            int absOffset = compOffset + fl.bitOffset();
             Class<?> type = rc.getType();
 
-            if (type == int.class) {
-                IntAccessor acc = new IntAccessor(absOffset, fl.bitWidth(), fl.minRaw());
-                accessors[i] = new FieldAccessor() {
-                    public Object get(DataStore s, int r) { return acc.get(s, r); }
-                    public void set(DataStore s, int r, Object v) { acc.set(s, r, (Integer) v); }
-                };
-            } else if (type == long.class) {
-                LongAccessor acc = new LongAccessor(absOffset, fl.bitWidth(), fl.minRaw());
-                accessors[i] = new FieldAccessor() {
-                    public Object get(DataStore s, int r) { return acc.get(s, r); }
-                    public void set(DataStore s, int r, Object v) { acc.set(s, r, (Long) v); }
-                };
-            } else if (type == double.class) {
-                DoubleAccessor acc = new DoubleAccessor(absOffset, fl.bitWidth(), fl.minRaw(), fl.scale());
-                accessors[i] = new FieldAccessor() {
-                    public Object get(DataStore s, int r) { return acc.get(s, r); }
-                    public void set(DataStore s, int r, Object v) { acc.set(s, r, (Double) v); }
-                };
-            } else if (type == boolean.class) {
-                BoolAccessor acc = new BoolAccessor(absOffset);
-                accessors[i] = new FieldAccessor() {
-                    public Object get(DataStore s, int r) { return acc.get(s, r); }
-                    public void set(DataStore s, int r, Object v) { acc.set(s, r, (Boolean) v); }
-                };
-            } else if (type.isEnum()) {
-                EnumField ann = rc.getAnnotation(EnumField.class);
-                boolean explicit = ann != null && ann.useExplicitCodes();
-                EnumAccessor acc = EnumAccessor.forField(absOffset, fl.bitWidth(),
-                        (Class<? extends Enum>) type, explicit);
-                accessors[i] = new FieldAccessor() {
-                    public Object get(DataStore s, int r) { return acc.get(s, r); }
-                    @SuppressWarnings("unchecked")
-                    public void set(DataStore s, int r, Object v) { acc.set(s, r, (Enum) v); }
-                };
+            if (type.isRecord()) {
+                // Composed record component — build a recursive accessor
+                accessors[i] = buildComposedAccessor(
+                        rc.getName(), (Class<? extends Record>) type,
+                        compLayout, compOffset, lookup);
             } else {
-                throw new IllegalArgumentException(
-                        "Unsupported field type for RowView: " + type + " in " + rc.getName());
+                FieldLayout fl = compLayout.field(rc.getName());
+                int absOffset = compOffset + fl.bitOffset();
+                accessors[i] = buildPrimitiveAccessor(type, fl, absOffset, rc);
             }
 
             // Getter method handle for the record component accessor method.
@@ -165,6 +135,146 @@ final class RecordRowView<T extends Record> implements RowView<T> {
         } catch (NoSuchMethodException | IllegalAccessException e) {
             throw new RuntimeException("Cannot access canonical constructor of " + recordClass, e);
         }
+    }
+
+    /**
+     * Builds a {@link FieldAccessor} for a primitive (non-composed) record component.
+     * Supports {@code int}, {@code long}, {@code double}, {@code float}, {@code boolean},
+     * and enum types.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static FieldAccessor buildPrimitiveAccessor(
+            Class<?> type, FieldLayout fl, int absOffset, RecordComponent rc) {
+        if (type == int.class) {
+            IntAccessor acc = new IntAccessor(absOffset, fl.bitWidth(), fl.minRaw());
+            return new FieldAccessor() {
+                public Object get(DataStore s, int r) { return acc.get(s, r); }
+                public void set(DataStore s, int r, Object v) { acc.set(s, r, (Integer) v); }
+            };
+        } else if (type == long.class) {
+            LongAccessor acc = new LongAccessor(absOffset, fl.bitWidth(), fl.minRaw());
+            return new FieldAccessor() {
+                public Object get(DataStore s, int r) { return acc.get(s, r); }
+                public void set(DataStore s, int r, Object v) { acc.set(s, r, (Long) v); }
+            };
+        } else if (type == double.class) {
+            DoubleAccessor acc = new DoubleAccessor(absOffset, fl.bitWidth(), fl.minRaw(), fl.scale());
+            return new FieldAccessor() {
+                public Object get(DataStore s, int r) { return acc.get(s, r); }
+                public void set(DataStore s, int r, Object v) { acc.set(s, r, (Double) v); }
+            };
+        } else if (type == float.class) {
+            DoubleAccessor acc = new DoubleAccessor(absOffset, fl.bitWidth(), fl.minRaw(), fl.scale());
+            return new FieldAccessor() {
+                public Object get(DataStore s, int r) { return (float) acc.get(s, r); }
+                public void set(DataStore s, int r, Object v) { acc.set(s, r, ((Float) v).doubleValue()); }
+            };
+        } else if (type == boolean.class) {
+            BoolAccessor acc = new BoolAccessor(absOffset);
+            return new FieldAccessor() {
+                public Object get(DataStore s, int r) { return acc.get(s, r); }
+                public void set(DataStore s, int r, Object v) { acc.set(s, r, (Boolean) v); }
+            };
+        } else if (type.isEnum()) {
+            EnumField ann = rc == null ? null : rc.getAnnotation(EnumField.class);
+            boolean explicit = ann != null && ann.useExplicitCodes();
+            EnumAccessor acc = EnumAccessor.forField(absOffset, fl.bitWidth(),
+                    (Class<? extends Enum>) type, explicit);
+            return new FieldAccessor() {
+                public Object get(DataStore s, int r) { return acc.get(s, r); }
+                @SuppressWarnings("unchecked")
+                public void set(DataStore s, int r, Object v) { acc.set(s, r, (Enum) v); }
+            };
+        }
+        throw new IllegalArgumentException(
+                "Unsupported field type for RowView: " + type
+                + (rc != null ? " in " + rc.getName() : ""));
+    }
+
+    /**
+     * Builds a {@link FieldAccessor} for a composed record component.
+     * The returned accessor reconstructs the sub-record on reads and decomposes it on writes.
+     * Recursively handles any further nested composed records.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static FieldAccessor buildComposedAccessor(
+            String prefix, Class<? extends Record> subType,
+            ComponentLayout compLayout, int compOffset,
+            MethodHandles.Lookup lookup) {
+
+        RecordComponent[] subRcs = subType.getRecordComponents();
+        FieldAccessor[]  subAccessors = new FieldAccessor[subRcs.length];
+        MethodHandle[]   subGetters   = new MethodHandle[subRcs.length];
+
+        for (int j = 0; j < subRcs.length; j++) {
+            RecordComponent subRc = subRcs[j];
+            String subFieldName = prefix + "." + subRc.getName();
+            Class<?> subFieldType = subRc.getType();
+
+            if (subFieldType.isRecord()) {
+                subAccessors[j] = buildComposedAccessor(
+                        subFieldName, (Class<? extends Record>) subFieldType,
+                        compLayout, compOffset, lookup);
+            } else {
+                FieldLayout fl = compLayout.field(subFieldName);
+                int absOffset = compOffset + fl.bitOffset();
+                subAccessors[j] = buildPrimitiveAccessor(subFieldType, fl, absOffset, subRc);
+            }
+
+            try {
+                subGetters[j] = lookup.unreflect(subRc.getAccessor());
+            } catch (IllegalAccessException e) {
+                try {
+                    subRc.getAccessor().setAccessible(true);
+                    subGetters[j] = MethodHandles.lookup().unreflect(subRc.getAccessor());
+                } catch (IllegalAccessException ex) {
+                    throw new RuntimeException("Cannot access accessor for " + subRc.getName(), ex);
+                }
+            }
+        }
+
+        // Constructor handle for the sub-record
+        Class<?>[] paramTypes = Arrays.stream(subRcs)
+                .map(RecordComponent::getType).toArray(Class[]::new);
+        MethodHandle ctorHandle;
+        try {
+            Constructor<?> ctor = subType.getDeclaredConstructor(paramTypes);
+            ctor.setAccessible(true);
+            ctorHandle = lookup.unreflectConstructor(ctor);
+        } catch (Exception e) {
+            throw new RuntimeException("Cannot access canonical constructor of " + subType, e);
+        }
+
+        final FieldAccessor[] finalSubAccessors = subAccessors;
+        final MethodHandle[]  finalSubGetters   = subGetters;
+        final MethodHandle    finalCtorHandle   = ctorHandle;
+
+        return new FieldAccessor() {
+            public Object get(DataStore<?> s, int r) {
+                Object[] args = new Object[finalSubAccessors.length];
+                for (int j = 0; j < finalSubAccessors.length; j++) {
+                    args[j] = finalSubAccessors[j].get(s, r);
+                }
+                try {
+                    return finalCtorHandle.invokeWithArguments(args);
+                } catch (Throwable e) {
+                    throw new RuntimeException("Failed to construct " + subType.getSimpleName(), e);
+                }
+            }
+
+            public void set(DataStore<?> s, int r, Object v) {
+                for (int j = 0; j < finalSubAccessors.length; j++) {
+                    Object fieldVal;
+                    try {
+                        fieldVal = finalSubGetters[j].invoke(v);
+                    } catch (Throwable e) {
+                        throw new RuntimeException(
+                                "Failed to read field from " + subType.getSimpleName(), e);
+                    }
+                    finalSubAccessors[j].set(s, r, fieldVal);
+                }
+            }
+        };
     }
 
     @Override
