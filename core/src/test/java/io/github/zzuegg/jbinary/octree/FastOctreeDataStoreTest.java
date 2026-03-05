@@ -78,10 +78,10 @@ class FastOctreeDataStoreTest {
     }
 
     @Test
-    void builderRejectsClassWithNoAnnotatedFields() {
-        record NoAnno(int x) {}
+    void builderRejectsClassWithUnsupportedFieldType() {
+        record Unsupported(Object x) {}
         assertThrows(IllegalArgumentException.class,
-                () -> FastOctreeDataStore.builder(4).component(NoAnno.class).build());
+                () -> FastOctreeDataStore.builder(4).component(Unsupported.class).build());
     }
 
     // -----------------------------------------------------------------------
