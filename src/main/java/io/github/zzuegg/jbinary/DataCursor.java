@@ -124,7 +124,9 @@ public final class DataCursor<T> {
      *
      * <p>Every field in {@code T} annotated with {@link StoreField} must:
      * <ul>
-     *   <li>be a public (or at least accessible) non-final, non-static primitive or enum field</li>
+     *   <li>be a public (or at least accessible) non-final, non-static field of a supported type
+ *       ({@code int}, {@code byte}, {@code short}, {@code char}, {@code long}, {@code float},
+ *       {@code double}, {@code boolean}, {@link String}, or an {@code enum})</li>
      *   <li>reference a component type registered in {@code store}</li>
      *   <li>name a field that exists in that component type</li>
      * </ul>
@@ -241,14 +243,29 @@ public final class DataCursor<T> {
         if (type == int.class) {
             return new IntAccessor(absOffset, fl.bitWidth(), fl.minRaw());
         }
+        if (type == byte.class) {
+            return new ByteAccessor(absOffset, fl.bitWidth(), fl.minRaw());
+        }
+        if (type == short.class) {
+            return new ShortAccessor(absOffset, fl.bitWidth(), fl.minRaw());
+        }
+        if (type == char.class) {
+            return new CharAccessor(absOffset, fl.bitWidth(), fl.minRaw());
+        }
         if (type == long.class) {
             return new LongAccessor(absOffset, fl.bitWidth(), fl.minRaw());
+        }
+        if (type == float.class) {
+            return new FloatAccessor(absOffset, fl.bitWidth(), fl.minRaw(), fl.scale());
         }
         if (type == double.class) {
             return new DoubleAccessor(absOffset, fl.bitWidth(), fl.minRaw(), fl.scale());
         }
         if (type == boolean.class) {
             return new BoolAccessor(absOffset);
+        }
+        if (type == String.class) {
+            return new StringAccessor(absOffset, (int) fl.minRaw(), (int) fl.scale());
         }
         if (type.isEnum()) {
             // Look up @EnumField on the component's field (not the cursor field).
@@ -259,7 +276,7 @@ public final class DataCursor<T> {
         }
         throw new IllegalArgumentException(
                 "Unsupported @StoreField type: " + type + " on field " + field.getName()
-                + " (must be int, long, double, boolean, or an enum)");
+                + " (supported: int, byte, short, char, long, float, double, boolean, String, enum)");
     }
 
     /**
