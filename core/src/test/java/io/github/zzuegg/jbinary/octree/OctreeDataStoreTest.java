@@ -91,10 +91,10 @@ class OctreeDataStoreTest {
     }
 
     @Test
-    void builderRejectsClassWithNoAnnotatedFields() {
-        record NoAnno(int x) {}
+    void builderRejectsClassWithUnsupportedFieldType() {
+        record Unsupported(Object x) {}
         assertThrows(IllegalArgumentException.class,
-                () -> OctreeDataStore.builder(4).component(NoAnno.class).build());
+                () -> OctreeDataStore.builder(4).component(Unsupported.class).build());
     }
 
     // -----------------------------------------------------------------------

@@ -90,10 +90,10 @@ class DataStoreEdgeCaseTest {
     }
 
     @Test
-    void classWithNoAnnotatedFieldsThrows() {
-        record NoAnnotations(int x, double y) {}
+    void classWithUnsupportedFieldTypeThrows() {
+        record Unsupported(Object x) {}
         assertThrows(IllegalArgumentException.class,
-                () -> DataStore.of(10, NoAnnotations.class));
+                () -> DataStore.of(10, Unsupported.class));
     }
 
     @Test
