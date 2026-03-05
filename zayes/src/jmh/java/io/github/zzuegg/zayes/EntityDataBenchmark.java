@@ -247,5 +247,121 @@ public class EntityDataBenchmark {
             bh.consume(newPos);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Split benchmarks: applyChanges() vs hot loop measured separately
+    //
+    // Uses @Setup(Level.Invocation) helper states to run the untimed phase
+    // before each benchmark invocation, isolating the measured phase.
+
+    /** Runs the default write loop before each invocation so applyChanges has work to do. */
+    @State(Scope.Thread)
+    public static class DefaultPreApply {
+        @Setup(Level.Invocation)
+        public void generateChanges(EntityDataBenchmark b) {
+            for (var entity : b.defaultSet) {
+                Position    pos = entity.get(Position.class);
+                Orientation ori = entity.get(Orientation.class);
+                Speed       spd = entity.get(Speed.class);
+                entity.set(new Position(
+                        pos.x() + ori.yaw() * spd.value(),
+                        pos.y() + ori.pitch() * spd.value(),
+                        pos.z() + ori.roll() * spd.value()));
+            }
+        }
+    }
+
+    /** Runs the packed write loop before each invocation so applyChanges has work to do. */
+    @State(Scope.Thread)
+    public static class PackedPreApply {
+        @Setup(Level.Invocation)
+        public void generateChanges(EntityDataBenchmark b) {
+            for (var entity : b.packedSet) {
+                Position    pos = entity.get(Position.class);
+                Orientation ori = entity.get(Orientation.class);
+                Speed       spd = entity.get(Speed.class);
+                entity.set(new Position(
+                        pos.x() + ori.yaw() * spd.value(),
+                        pos.y() + ori.pitch() * spd.value(),
+                        pos.z() + ori.roll() * spd.value()));
+            }
+        }
+    }
+
+    /** Calls applyChanges before each invocation so the loop starts with a clean queue. */
+    @State(Scope.Thread)
+    public static class DefaultPreLoop {
+        @Setup(Level.Invocation)
+        public void absorb(EntityDataBenchmark b) {
+            b.defaultSet.applyChanges();
+        }
+    }
+
+    /** Calls applyChanges before each invocation so the loop starts with a clean queue. */
+    @State(Scope.Thread)
+    public static class PackedPreLoop {
+        @Setup(Level.Invocation)
+        public void absorb(EntityDataBenchmark b) {
+            b.packedSet.applyChanges();
+        }
+    }
+
+    // ---- applyChanges-only benchmarks ----
+
+    @Benchmark
+    public boolean defaultEntityData_applyOnly(DefaultPreApply s) {
+        return defaultSet.applyChanges();
+    }
+
+    @Benchmark
+    public boolean packedEntityData_applyOnly(PackedPreApply s) {
+        return packedSet.applyChanges();
+    }
+
+    // ---- loop-only benchmarks (read + compute + write, no applyChanges) ----
+
+    @Benchmark
+    public void defaultEntityData_loopOnly(DefaultPreLoop s, Blackhole bh) {
+        for (var entity : defaultSet) {
+            Position    pos = entity.get(Position.class);
+            Orientation ori = entity.get(Orientation.class);
+            Speed       spd = entity.get(Speed.class);
+            Position newPos = new Position(
+                    pos.x() + ori.yaw()   * spd.value(),
+                    pos.y() + ori.pitch() * spd.value(),
+                    pos.z() + ori.roll()  * spd.value());
+            entity.set(newPos);
+            bh.consume(newPos);
+        }
+    }
+
+    @Benchmark
+    public void packedEntityData_loopOnly(PackedPreLoop s, Blackhole bh) {
+        for (var entity : packedSet) {
+            Position    pos = entity.get(Position.class);
+            Orientation ori = entity.get(Orientation.class);
+            Speed       spd = entity.get(Speed.class);
+            Position newPos = new Position(
+                    pos.x() + ori.yaw()   * spd.value(),
+                    pos.y() + ori.pitch() * spd.value(),
+                    pos.z() + ori.roll()  * spd.value());
+            entity.set(newPos);
+            bh.consume(newPos);
+        }
+    }
+
+    @Benchmark
+    public void packedEntityData_loopOnly_multiCursor(PackedPreLoop s, Blackhole bh) {
+        for (var entity : packedSet) {
+            int idx = ((IndexedEntity) entity).getIndex();
+            PhysicsProjection p = multiCursor.update(packedStore, idx);
+            Position newPos = new Position(
+                    p.posX + p.yaw   * p.speed,
+                    p.posY + p.pitch * p.speed,
+                    p.posZ + p.roll  * p.speed);
+            entity.set(newPos);
+            bh.consume(newPos);
+        }
+    }
 }
 
