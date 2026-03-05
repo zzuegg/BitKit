@@ -5,6 +5,10 @@ import com.simsilica.es.EntityId;
 import com.simsilica.es.EntitySet;
 import com.simsilica.es.base.DefaultEntityData;
 
+import io.github.zzuegg.jbinary.DataCursor;
+import io.github.zzuegg.jbinary.DataStore;
+import io.github.zzuegg.jbinary.annotation.StoreField;
+
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
 
@@ -69,10 +73,27 @@ public class EntityDataBenchmark {
     private EntitySet          packedSet;
     private EntityId[]         packedIds;
 
-    // Pre-built direct-access cursors for the cursor benchmark
+    // Pre-built direct-access cursors for the per-type cursor benchmark
     private PackedEntitySet.PackedCursor<Position>    posCursor;
     private PackedEntitySet.PackedCursor<Orientation> oriCursor;
     private PackedEntitySet.PackedCursor<Speed>       spdCursor;
+
+    // Multi-component projection: all fields in one cursor, one load() per entity
+    static class PhysicsProjection {
+        @StoreField(component = Position.class, field = "x")       public float posX;
+        @StoreField(component = Position.class, field = "y")       public float posY;
+        @StoreField(component = Position.class, field = "z")       public float posZ;
+        @StoreField(component = Orientation.class, field = "yaw")  public float yaw;
+        @StoreField(component = Orientation.class, field = "pitch") public float pitch;
+        @StoreField(component = Orientation.class, field = "roll") public float roll;
+        @StoreField(component = Speed.class, field = "value")      public float speed;
+    }
+    private DataCursor<PhysicsProjection> multiCursor;
+    private DataStore<?> packedStore;
+
+    // Auto-generated projection: all store-backed fields, one load() per entity
+    private DataCursor<?> autoCursor;
+    private Object autoCursorInstance;
 
     // -----------------------------------------------------------------------
     // Setup / teardown
@@ -106,11 +127,21 @@ public class EntityDataBenchmark {
         packedSet = packedEd.getEntities(Position.class, Orientation.class, Speed.class);
         packedSet.applyChanges();
 
-        // Build direct-access cursors for the cursor benchmark
+        // Build direct-access cursors for the per-type cursor benchmark
         PackedEntitySet pes = (PackedEntitySet) packedSet;
         posCursor = pes.createCursor(Position.class);
         oriCursor = pes.createCursor(Orientation.class);
         spdCursor = pes.createCursor(Speed.class);
+
+        // Build multi-component cursor (explicit projection class)
+        multiCursor = pes.createDataCursor(PhysicsProjection.class);
+        packedStore = pes.store();
+
+        // Build auto-generated projection cursor
+        autoCursor = pes.generateProjectionCursor();
+        if (autoCursor != null) {
+            autoCursorInstance = autoCursor.get();
+        }
     }
 
     @TearDown(Level.Trial)
@@ -189,6 +220,29 @@ public class EntityDataBenchmark {
                     pos.x() + ori.yaw()   * spd.value(),
                     pos.y() + ori.pitch() * spd.value(),
                     pos.z() + ori.roll()  * spd.value());
+            entity.set(newPos);
+            bh.consume(newPos);
+        }
+    }
+
+    /**
+     * Multi-component cursor: a single {@link DataCursor#load} populates all
+     * Position, Orientation, and Speed fields in one call — no per-type cursor
+     * overhead, no boxing, no allocation.
+     *
+     * <p>Uses an explicit user-defined {@link PhysicsProjection} class with
+     * {@link StoreField} annotations spanning all three component types.
+     */
+    @Benchmark
+    public void packedEntityData_gameLoop_multiCursor(Blackhole bh) {
+        packedSet.applyChanges();
+        for (var entity : packedSet) {
+            int idx = ((IndexedEntity) entity).getIndex();
+            PhysicsProjection p = multiCursor.update(packedStore, idx);
+            Position newPos = new Position(
+                    p.posX + p.yaw   * p.speed,
+                    p.posY + p.pitch * p.speed,
+                    p.posZ + p.roll  * p.speed);
             entity.set(newPos);
             bh.consume(newPos);
         }

@@ -638,6 +638,71 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
     }
 
     // -----------------------------------------------------------------------
+    // Multi-component DataCursor factory
+
+    /**
+     * Creates a {@link DataCursor} over this set's packed store for a user-defined projection
+     * class annotated with {@link io.github.zzuegg.jbinary.annotation.StoreField}.
+     *
+     * <p>This allows reading (and writing) fields from <em>multiple</em> component types
+     * in a single {@code load()} call — zero allocation, zero boxing.
+     *
+     * <p>Example:
+     * <pre>{@code
+     * class PhysicsProjection {
+     *     @StoreField(component = Position.class, field = "x")    public float posX;
+     *     @StoreField(component = Position.class, field = "y")    public float posY;
+     *     @StoreField(component = Position.class, field = "z")    public float posZ;
+     *     @StoreField(component = Orientation.class, field = "yaw")   public float yaw;
+     *     @StoreField(component = Orientation.class, field = "pitch") public float pitch;
+     *     @StoreField(component = Orientation.class, field = "roll")  public float roll;
+     *     @StoreField(component = Speed.class, field = "value")       public float speed;
+     * }
+     *
+     * DataCursor<PhysicsProjection> cursor = set.createDataCursor(PhysicsProjection.class);
+     * for (var entity : set) {
+     *     PhysicsProjection p = cursor.update(store(), ((IndexedEntity) entity).getIndex());
+     *     // p.posX, p.yaw, p.speed etc. are all populated — one load() call
+     * }
+     * }</pre>
+     *
+     * @param projectionClass a class with {@link io.github.zzuegg.jbinary.annotation.StoreField}-annotated
+     *                        public mutable fields
+     * @param <T> the projection type
+     * @return a reusable, allocation-free cursor bound to this set's store
+     */
+    public <T> DataCursor<T> createDataCursor(Class<T> projectionClass) {
+        return DataCursor.of(store, projectionClass);
+    }
+
+    /**
+     * Returns the underlying packed store for use with cursors obtained from
+     * {@link #createDataCursor(Class)}.
+     */
+    public DataStore<?> store() {
+        return store;
+    }
+
+    /**
+     * Generates a multi-component projection cursor class at runtime using ByteBuddy,
+     * spanning all store-backed component types in this set.  The generated class has one
+     * public mutable field per component field, each annotated with
+     * {@link io.github.zzuegg.jbinary.annotation.StoreField}.
+     *
+     * <p>A single {@link DataCursor#load} populates every field across all component types
+     * — zero allocation, zero boxing, one call per row.
+     *
+     * <p>Field naming convention: {@code componentSimpleName_fieldName} (e.g.
+     * {@code Position_x}, {@code Speed_value}).
+     *
+     * @return a {@code DataCursor} whose held instance has all component fields, or
+     *         {@code null} if no component types are store-backed
+     */
+    public DataCursor<?> generateProjectionCursor() {
+        return ProjectionCursorGenerator.generate(store, types, bridges);
+    }
+
+    // -----------------------------------------------------------------------
     // Helpers
 
     @SuppressWarnings("unchecked")
