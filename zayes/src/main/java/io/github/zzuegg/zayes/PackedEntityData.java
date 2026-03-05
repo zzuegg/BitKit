@@ -98,16 +98,20 @@ public final class PackedEntityData implements EntityData, EntityComponentListen
                 set.entityChange(change);
             }
         }
-        // Prune released sets opportunistically (not strictly necessary)
-        entitySets.removeIf(PackedEntitySet::isReleased);
     }
 
     // -----------------------------------------------------------------------
     // EntityData — getEntities is overridden; everything else delegates
 
+    /** Removes released sets from the list. Called lazily, not on every change. */
+    void pruneReleasedSets() {
+        entitySets.removeIf(PackedEntitySet::isReleased);
+    }
+
     @Override
     @SuppressWarnings("rawtypes")
     public EntitySet getEntities(Class... types) {
+        pruneReleasedSets();
         PackedEntitySet set = new PackedEntitySet(parent, null, types, capacity);
         entitySets.add(set);
         return set;
@@ -116,6 +120,7 @@ public final class PackedEntityData implements EntityData, EntityComponentListen
     @Override
     @SuppressWarnings("rawtypes")
     public EntitySet getEntities(ComponentFilter filter, Class... types) {
+        pruneReleasedSets();
         PackedEntitySet set = new PackedEntitySet(parent, filter, types, capacity);
         entitySets.add(set);
         return set;

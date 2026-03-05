@@ -18,15 +18,17 @@ import io.github.zzuegg.jbinary.schema.LayoutBuilder;
 import java.util.AbstractSet;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.BitSet;
+import java.util.function.Consumer;
 
 /**
  * A self-managing {@link EntitySet} that stores entity membership and component data
@@ -92,6 +94,9 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
     /** EntityId (raw long) → dense index. */
     private final HashMap<Long, Integer> idToIndex = new HashMap<>();
 
+    /** Component class → type index (O(1) identity-based lookup). */
+    private final IdentityHashMap<Class<?>, Integer> typeIndexMap;
+
     private int size = 0;
 
     private Set<Entity> addedEntities   = new HashSet<>();
@@ -125,8 +130,10 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
         this.capacity = capacity;
 
         this.types = new Class[rawTypes.length];
+        this.typeIndexMap = new IdentityHashMap<>(rawTypes.length * 2);
         for (int i = 0; i < rawTypes.length; i++) {
             this.types[i] = (Class<EntityComponent>) rawTypes[i];
+            this.typeIndexMap.put(rawTypes[i], i);
         }
 
         // ── Phase 1: determine which component types can be stored in the DataStore ──
@@ -546,7 +553,7 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
     @Override
     public boolean hasChanges() {
         return !addedEntities.isEmpty() || !changedEntities.isEmpty() || !removedEntities.isEmpty()
-                || !pendingChanges.isEmpty() || filtersChanged;
+                || !pendingChanges.isEmpty() || filtersChanged || !locallyChanged.isEmpty();
     }
 
     @Override
@@ -607,6 +614,16 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
             Entity current = next;
             advance();
             return current;
+        }
+    }
+
+    @Override
+    public void forEach(Consumer<? super Entity> action) {
+        for (int i = 0; i < nextIndex; i++) {
+            IndexedEntity ie = entities[i];
+            if (ie != null) {
+                action.accept(ie);
+            }
         }
     }
 
@@ -744,11 +761,8 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
     // -----------------------------------------------------------------------
     // Helpers
 
-    @SuppressWarnings("unchecked")
     private int typeIndex(Class<?> type) {
-        for (int i = 0; i < types.length; i++) {
-            if (types[i] == type) return i;
-        }
-        return -1;
+        Integer idx = typeIndexMap.get(type);
+        return idx != null ? idx : -1;
     }
 }
