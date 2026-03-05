@@ -172,11 +172,15 @@ public class EntityDataBenchmark {
      * {@link IndexedEntity#get} abstraction (no type-index lookup, no indirection
      * through the entity wrapper).  Writes still use {@code entity.set()} to propagate
      * changes through the normal zay-es pipeline.
+     *
+     * <p>{@link PackedEntitySet} always returns {@link IndexedEntity} instances from its
+     * iterator, so the cast below is safe by construction.
      */
     @Benchmark
     public void packedEntityData_gameLoop_cursor(Blackhole bh) {
         packedSet.applyChanges();
         for (var entity : packedSet) {
+            // PackedEntitySet always returns IndexedEntity — cast is safe by construction.
             int idx = ((IndexedEntity) entity).getIndex();
             Position    pos = posCursor.read(idx);
             Orientation ori = oriCursor.read(idx);

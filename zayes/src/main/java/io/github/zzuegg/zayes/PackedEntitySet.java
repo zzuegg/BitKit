@@ -601,6 +601,9 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
      * entity's row index (from {@link IndexedEntity#getIndex()}) to {@link #read} or
      * {@link #write}.
      *
+     * <p>The cursor is not thread-safe and should not be shared across threads.
+     * {@code bridge} and {@code store} are guaranteed non-null by the factory.
+     *
      * @param <T> the component type
      */
     public static final class PackedCursor<T extends EntityComponent> {
@@ -616,6 +619,9 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
          * Reads the component at the given row index from the packed store and returns a
          * new component instance.  Uses the unboxed {@link java.lang.invoke.MethodHandle}
          * path — no {@code Object[]} allocation, no primitive boxing.
+         *
+         * <p>{@code index} must be a valid slot (i.e. an {@link IndexedEntity#getIndex()}
+         * value for an entity currently in the set); behaviour is undefined for free slots.
          */
         public T read(int index) { return bridge.read(store, index); }
 
@@ -624,6 +630,8 @@ public final class PackedEntitySet extends AbstractSet<Entity> implements Entity
          * <em>This does not propagate the change to the parent {@link com.simsilica.es.EntityData}</em>;
          * call {@link IndexedEntity#set} if authoritative storage and change notification
          * are required.
+         *
+         * <p>{@code component} must not be {@code null}; {@code index} must be a valid slot.
          */
         public void write(int index, T component) { bridge.write(store, index, component); }
     }
