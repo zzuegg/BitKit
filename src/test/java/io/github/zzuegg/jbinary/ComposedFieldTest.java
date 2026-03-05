@@ -281,4 +281,129 @@ class ComposedFieldTest {
         assertEquals(2, e1.id()); assertEquals(4.0, e1.position().x(), 0.01);
         assertEquals(3, e2.id()); assertEquals(7.0, e2.position().x(), 0.01);
     }
+
+    // ------------------------------------------------------------------ plain class composed types
+
+    /** A plain Java class (not a record) used as a composed position type. */
+    static class PlainVec3 {
+        @DecimalField(min = -1000.0, max = 1000.0, precision = 2) public double x;
+        @DecimalField(min = -1000.0, max = 1000.0, precision = 2) public double y;
+        @DecimalField(min = -1000.0, max = 1000.0, precision = 2) public double z;
+        public PlainVec3() {}
+        public PlainVec3(double x, double y, double z) { this.x = x; this.y = y; this.z = z; }
+    }
+
+    /** A record whose composed field is a plain class (not a record). */
+    record EntityWithPlain(
+            @BitField(min = 0, max = 255) int id,
+            PlainVec3 position
+    ) {}
+
+    /** A plain class at the top-level component (not a record). */
+    static class PlainTerrain {
+        @BitField(min = 0, max = 255) public int height;
+        @DecimalField(min = -50.0, max = 50.0, precision = 2) public double temperature;
+        @BoolField public boolean active;
+        public PlainTerrain() {}
+        public PlainTerrain(int h, double t, boolean a) { height = h; temperature = t; active = a; }
+    }
+
+    /** A plain class with a plain class composed sub-field. */
+    static class PlainEntity {
+        @BitField(min = 0, max = 255) public int id;
+        public PlainVec3 position;
+        public PlainEntity() {}
+        public PlainEntity(int id, PlainVec3 pos) { this.id = id; this.position = pos; }
+    }
+
+    @Test
+    void plainClassComposedInRecordAccessors() {
+        // EntityWithPlain.position is PlainVec3 (plain class, not record)
+        DataStore<?> store = DataStore.packed(10, EntityWithPlain.class);
+
+        DoubleAccessor posX = Accessors.doubleFieldInStore(store, EntityWithPlain.class, "position.x");
+        DoubleAccessor posY = Accessors.doubleFieldInStore(store, EntityWithPlain.class, "position.y");
+        IntAccessor    id   = Accessors.intFieldInStore(store, EntityWithPlain.class, "id");
+
+        id.set(store, 0, 7);
+        posX.set(store, 0, 5.5);
+        posY.set(store, 0, -3.3);
+
+        assertEquals(7,   id.get(store, 0));
+        assertEquals(5.5,  posX.get(store, 0), 0.01);
+        assertEquals(-3.3, posY.get(store, 0), 0.01);
+    }
+
+    @Test
+    void plainClassComposedInRecordRowView() {
+        DataStore<?> store = DataStore.packed(10, EntityWithPlain.class);
+        RowView<EntityWithPlain> view = RowView.of(store, EntityWithPlain.class);
+
+        PlainVec3 pos = new PlainVec3(1.1, 2.2, 3.3);
+        view.set(store, 0, new EntityWithPlain(42, pos));
+
+        EntityWithPlain got = view.get(store, 0);
+        assertEquals(42,  got.id());
+        assertEquals(1.1, got.position().x, 0.01);
+        assertEquals(2.2, got.position().y, 0.01);
+        assertEquals(3.3, got.position().z, 0.01);
+    }
+
+    @Test
+    void plainTopLevelComponentRowViewRoundTrip() {
+        // PlainTerrain is not a record — use RowView.of(store, PlainTerrain.class)
+        DataStore<?> store = DataStore.packed(10, PlainTerrain.class);
+        RowView<PlainTerrain> view = RowView.of(store, PlainTerrain.class);
+
+        view.set(store, 3, new PlainTerrain(200, -12.5, true));
+
+        PlainTerrain got = view.get(store, 3);
+        assertEquals(200,   got.height);
+        assertEquals(-12.5, got.temperature, 0.01);
+        assertTrue(got.active);
+    }
+
+    @Test
+    void plainTopLevelComponentAccessors() {
+        DataStore<?> store = DataStore.packed(5, PlainTerrain.class);
+
+        Accessors.intFieldInStore(store, PlainTerrain.class, "height").set(store, 0, 128);
+        Accessors.doubleFieldInStore(store, PlainTerrain.class, "temperature").set(store, 0, 22.5);
+        Accessors.boolFieldInStore(store, PlainTerrain.class, "active").set(store, 0, true);
+
+        assertEquals(128,  Accessors.intFieldInStore(store, PlainTerrain.class, "height").get(store, 0));
+        assertEquals(22.5, Accessors.doubleFieldInStore(store, PlainTerrain.class, "temperature").get(store, 0), 0.01);
+        assertTrue(Accessors.boolFieldInStore(store, PlainTerrain.class, "active").get(store, 0));
+    }
+
+    @Test
+    void plainTopLevelWithPlainComposedSubField() {
+        // PlainEntity has a PlainVec3 composed sub-field — both are plain classes
+        DataStore<?> store = DataStore.packed(10, PlainEntity.class);
+        RowView<PlainEntity> view = RowView.of(store, PlainEntity.class);
+
+        view.set(store, 0, new PlainEntity(55, new PlainVec3(10.0, 20.0, 30.0)));
+
+        PlainEntity got = view.get(store, 0);
+        assertEquals(55,   got.id);
+        assertEquals(10.0, got.position.x, 0.01);
+        assertEquals(20.0, got.position.y, 0.01);
+        assertEquals(30.0, got.position.z, 0.01);
+    }
+
+    @Test
+    void plainTopLevelMultipleRows() {
+        DataStore<?> store = DataStore.packed(5, PlainTerrain.class);
+        RowView<PlainTerrain> view = RowView.of(store, PlainTerrain.class);
+
+        view.set(store, 0, new PlainTerrain(10, 0.0,  false));
+        view.set(store, 1, new PlainTerrain(20, 10.5, true));
+        view.set(store, 2, new PlainTerrain(30, -5.5, false));
+
+        assertEquals(10, view.get(store, 0).height);
+        assertEquals(20, view.get(store, 1).height);
+        assertEquals(30, view.get(store, 2).height);
+        assertFalse(view.get(store, 0).active);
+        assertTrue(view.get(store, 1).active);
+    }
 }
