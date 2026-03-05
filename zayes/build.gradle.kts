@@ -33,6 +33,7 @@ repositories {
 dependencies {
     implementation(project(":core"))
     implementation(libs.zayes)
+    implementation(libs.bytebuddy)
 
     testImplementation(libs.zayes)
     testImplementation(libs.junit.jupiter)
